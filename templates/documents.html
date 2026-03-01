@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block title %}Documents - PDF Search{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h1>Documents</h1>
+
+    {% if documents %}
+    <div class="documents-grid">
+        {% for doc in documents %}
+        <a href="/documents/{{ doc.id }}" class="document-card">
+            <div class="document-card-header">
+                <h2 class="document-title">{{ doc.filename }}</h2>
+                <span class="document-status status-{{ doc.processed_status }}">
+                    {{ doc.processed_status }}
+                </span>
+            </div>
+            <div class="document-card-body">
+                <div class="document-meta">
+                    <span class="meta-item">
+                        <strong>Pages:</strong> {{ doc.page_count }}
+                    </span>
+                    <span class="meta-item">
+                        <strong>Uploaded:</strong> 
+                        {% if doc.created_at %}
+                            {{ doc.created_at.strftime('%Y-%m-%d %H:%M') }}
+                        {% else %}
+                            N/A
+                        {% endif %}
+                    </span>
+                </div>
+            </div>
+        </a>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <h2>No documents yet</h2>
+        <p>Upload PDFs to get started with document search.</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

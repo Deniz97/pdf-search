@@ -3,23 +3,16 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse
 from starlette.templating import Jinja2Templates
 from pydantic import BaseModel
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Session
 from openai import OpenAI
 
 from app.config import settings
 from app.database import get_db
-from app.directory_service import (
-    ingest_pdf_from_directory,
-    scan_directory_for_pdfs,
-    sync_directory,
-)
 from app.embeddings import ask_llm, get_embedding, get_embeddings
-from app.models import Chunk, Directory, Document
+from app.models import Chunk, Document
 from app.pdf_processing import chunk_text, extract_text_from_pdf
 from app.schemas import (
     ChatMessage,
@@ -27,11 +20,6 @@ from app.schemas import (
     ChatResponse,
     ChunkResult,
     ChunkResultWithDocument,
-    DirectoryCreateRequest,
-    DirectoryIngestRequest,
-    DirectoryIngestResponse,
-    DirectoryResponse,
-    DirectorySyncResponse,
     DocumentResponse,
     QueryRequest,
     QueryResponse,
@@ -209,14 +197,44 @@ async def list_documents(db: AsyncSession = Depends(get_db)):
 
 @router.post("/documents/search")
 async def search_documents(
-    body: SearchOnlyRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """Search documents and return matched chunks with document info (no LLM answer).
     Returns HTML if requested via HTMX, JSON otherwise.
+    Accepts form data (HTMX) or JSON body (API).
     """
-    query_embedding = get_embedding(body.query)
+    # Handle form data (HTMX) vs JSON (API)
+    # FastAPI parses body params before the handler runs; form data would fail JSON
+    # validation, so we parse manually based on content type.
+    content_type = (request.headers.get("content-type") or "").lower()
+    if request.headers.get("hx-request") or "application/x-www-form-urlencoded" in content_type or "multipart/form-data" in content_type:
+        # HTMX / form submission
+        form_data = await request.form()
+        raw_query = form_data.get("query")
+        if not raw_query or not isinstance(raw_query, str):
+            raise HTTPException(status_code=422, detail="query is required")
+        search_query: str = raw_query.strip()
+        if not search_query:
+            raise HTTPException(status_code=422, detail="query must not be empty")
+        raw_top_k = form_data.get("top_k", "10")
+        top_k_str = raw_top_k if isinstance(raw_top_k, str) else "10"
+        try:
+            search_top_k = int(top_k_str)
+        except ValueError:
+            search_top_k = 10
+        search_top_k = max(1, min(50, search_top_k))
+    else:
+        # API sends JSON body
+        try:
+            raw = await request.json()
+        except Exception:
+            raise HTTPException(status_code=422, detail="Request body must be valid JSON")
+        body = SearchOnlyRequest.model_validate(raw)
+        search_query = body.query
+        search_top_k = body.top_k
+
+    query_embedding = get_embedding(search_query)
 
     result = await db.execute(
         text("""
@@ -228,7 +246,7 @@ async def search_documents(
             ORDER BY c.embedding <=> :embedding
             LIMIT :limit
         """),
-        {"embedding": str(query_embedding), "limit": body.top_k},
+        {"embedding": str(query_embedding), "limit": search_top_k},
     )
     rows = result.fetchall()
 
@@ -236,9 +254,7 @@ async def search_documents(
         # Check if this is an HTMX request
         if request.headers.get("hx-request"):
             return templates.TemplateResponse(
-                request=request,
-                name="search_results.html",
-                context={"results": []}
+                request=request, name="search_results.html", context={"results": []}
             )
         raise HTTPException(
             status_code=404, detail="No documents found. Upload a PDF first."
@@ -261,30 +277,24 @@ async def search_documents(
     # Return HTML for HTMX requests, JSON for API requests
     if request.headers.get("hx-request"):
         return templates.TemplateResponse(
-            request=request,
-            name="search_results.html",
-            context={"results": results}
+            request=request, name="search_results.html", context={"results": results}
         )
-    
-    return SearchOnlyResponse(query=body.query, results=results)
+
+    return SearchOnlyResponse(query=search_query, results=results)
 
 
 async def build_system_prompt(db: AsyncSession) -> str:
     """Build system prompt with document list."""
-    result = await db.execute(
-        select(Document).order_by(Document.filename)
-    )
+    result = await db.execute(select(Document).order_by(Document.filename))
     documents = result.scalars().all()
-    
+
     if not documents:
         return (
             "You are a helpful assistant with access to a document library. "
             "However, no documents have been uploaded yet."
         )
-    
-    doc_list = "\n".join(
-        f"  - {d.filename} ({d.page_count} pages)" for d in documents
-    )
+
+    doc_list = "\n".join(f"  - {d.filename} ({d.page_count} pages)" for d in documents)
     return (
         "You are a helpful assistant with access to a document library. "
         "You can search through the documents to answer user questions.\n\n"
@@ -302,7 +312,7 @@ async def execute_tool_call(
 ) -> str:
     """Execute a tool call and return JSON results."""
     query_embedding = get_embedding(arguments["query"])
-    
+
     if name == "search":
         result = await db.execute(
             text("""
@@ -336,7 +346,7 @@ async def execute_tool_call(
         )
     else:
         return json.dumps({"error": f"Unknown tool: {name}"})
-    
+
     rows = result.fetchall()
     results = [
         {
@@ -359,13 +369,13 @@ async def chat(
     """Chat endpoint with tool calling support (replicates CLI chatbot)."""
     # Build messages list for OpenAI
     messages = []
-    
+
     # Add system prompt if not already present
     has_system = any(msg.role == "system" for msg in body.messages)
     if not has_system:
         system_prompt = await build_system_prompt(db)
         messages.append({"role": "system", "content": system_prompt})
-    
+
     # Convert request messages to OpenAI format
     for msg in body.messages:
         if msg.role == "tool":
@@ -378,41 +388,46 @@ async def chat(
         else:
             msg_dict = {"role": msg.role, "content": msg.content}
         messages.append(msg_dict)
-    
-    # Call OpenAI with tool calling
-    response = openai_client.chat.completions.create(
-        model=settings.chat_model,
-        messages=messages,
-        tools=TOOLS,
-    )
-    
-    choice = response.choices[0]
-    msg = choice.message
-    
-    if msg.tool_calls:
-        # Return tool calls for the client to handle
-        tool_calls = [
-            {
-                "id": tc.id,
-                "type": tc.type,
-                "function": {
-                    "name": tc.function.name,
-                    "arguments": tc.function.arguments,
-                },
-            }
-            for tc in msg.tool_calls
-        ]
-        return ChatResponse(
-            message=ChatMessage(role="assistant", content=""),
-            tool_calls=tool_calls,
+
+    # Loop until we get a final answer (handle tool calls server-side)
+    while True:
+        # Call OpenAI with tool calling
+        response = openai_client.chat.completions.create(
+            model=settings.chat_model,
+            messages=messages,
+            tools=TOOLS,  # type: ignore[arg-type]
         )
-    
-    # Return assistant message
-    content = msg.content or ""
-    return ChatResponse(
-        message=ChatMessage(role="assistant", content=content),
-        tool_calls=None,
-    )
+
+        choice = response.choices[0]
+        msg = choice.message
+
+        if msg.tool_calls:
+            # Add assistant message with tool calls to conversation
+            messages.append(msg.model_dump())
+
+            # Execute all tool calls and add results to messages
+            for tool_call in msg.tool_calls:
+                fn_name = tool_call.function.name  # type: ignore[attr-defined]
+                fn_args = json.loads(tool_call.function.arguments)  # type: ignore[attr-defined]
+
+                result_json = await execute_tool_call(fn_name, fn_args, db)
+
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": result_json,
+                    }
+                )
+            # Continue loop to get final answer after tool execution
+            continue
+
+        # No tool calls - return final assistant message
+        content = msg.content or ""
+        return ChatResponse(
+            message=ChatMessage(role="assistant", content=content),
+            tool_calls=None,
+        )
 
 
 class ToolExecuteRequest(BaseModel):
@@ -428,173 +443,3 @@ async def execute_chat_tool(
     """Execute a tool call from chat and return results."""
     result_json = await execute_tool_call(body.tool_name, body.arguments, db)
     return {"result": result_json}
-
-
-# Directory management routes
-
-
-@router.post("/directories", response_model=DirectoryResponse)
-async def create_directory(
-    body: DirectoryCreateRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    """Add a new directory to monitor."""
-    directory_path = Path(body.path)
-    
-    if not directory_path.exists():
-        raise HTTPException(status_code=400, detail="Directory path does not exist")
-    
-    if not directory_path.is_dir():
-        raise HTTPException(status_code=400, detail="Path is not a directory")
-    
-    # Check if directory already exists
-    existing = await db.execute(
-        select(Directory).where(Directory.path == str(directory_path.absolute()))
-    )
-    if existing.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="Directory already registered")
-    
-    directory = Directory(
-        path=str(directory_path.absolute()),
-        name=body.name,
-        status="active",
-    )
-    db.add(directory)
-    await db.commit()
-    await db.refresh(directory)
-    
-    return directory
-
-
-@router.get("/directories", response_model=list[DirectoryResponse])
-async def list_directories(db: AsyncSession = Depends(get_db)):
-    """List all registered directories."""
-    result = await db.execute(select(Directory).order_by(Directory.created_at.desc()))
-    return result.scalars().all()
-
-
-@router.delete("/directories/{directory_id}")
-async def delete_directory(
-    directory_id: str,
-    db: AsyncSession = Depends(get_db),
-):
-    """Delete a directory and optionally its documents."""
-    directory = await db.get(Directory, directory_id)
-    if not directory:
-        raise HTTPException(status_code=404, detail="Directory not found")
-    
-    # Delete directory (documents will have directory_id set to NULL due to SET NULL)
-    await db.delete(directory)
-    await db.commit()
-    
-    return {"message": "Directory deleted successfully"}
-
-
-@router.post("/directories/{directory_id}/sync", response_model=DirectorySyncResponse)
-async def sync_directory_endpoint(
-    directory_id: str,
-    db: AsyncSession = Depends(get_db),
-):
-    """Scan directory for PDFs and register them in database."""
-    directory = await db.get(Directory, directory_id)
-    if not directory:
-        raise HTTPException(status_code=404, detail="Directory not found")
-    
-    directory_path = Path(directory.path)
-    if not directory_path.exists():
-        raise HTTPException(status_code=400, detail="Directory path no longer exists")
-    
-    total_found, new_count, existing_count = await sync_directory(
-        db, directory_id, directory_path
-    )
-    
-    await db.refresh(directory)
-    
-    return DirectorySyncResponse(
-        directory=DirectoryResponse.model_validate(directory),
-        pdfs_found=total_found,
-        pdfs_new=new_count,
-        pdfs_existing=existing_count,
-        message=f"Found {total_found} PDFs ({new_count} new, {existing_count} existing)",
-    )
-
-
-@router.post(
-    "/directories/{directory_id}/ingest", response_model=DirectoryIngestResponse
-)
-async def ingest_directory_endpoint(
-    directory_id: str,
-    body: DirectoryIngestRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    """Ingest PDFs from a directory (with optional limit for incremental ingestion)."""
-    directory = await db.get(Directory, directory_id)
-    if not directory:
-        raise HTTPException(status_code=404, detail="Directory not found")
-    
-    directory_path = Path(directory.path)
-    if not directory_path.exists():
-        raise HTTPException(status_code=400, detail="Directory path no longer exists")
-    
-    # Get PDFs from directory
-    pdfs = scan_directory_for_pdfs(directory_path)
-    
-    # Get documents that need ingestion (waiting or errored status)
-    result = await db.execute(
-        text(
-            "SELECT id, filename, file_path FROM documents "
-            "WHERE directory_id = :dir_id AND processed_status IN ('waiting', 'errored') "
-            "ORDER BY created_at ASC"
-        ),
-        {"dir_id": directory_id},
-    )
-    docs_to_ingest = result.fetchall()
-    
-    # Create mapping of filename -> (doc_id, relative_path)
-    doc_map = {doc.filename: (str(doc.id), doc.file_path) for doc in docs_to_ingest}
-    
-    # Filter PDFs to only those that have document records
-    pdfs_to_process = [
-        (pdf_path, rel_path)
-        for pdf_path, rel_path in pdfs
-        if pdf_path.name in doc_map
-    ]
-    
-    # Apply limit if specified
-    if body.limit:
-        pdfs_to_process = pdfs_to_process[: body.limit]
-    
-    if not pdfs_to_process:
-        await db.refresh(directory)
-        return DirectoryIngestResponse(
-            directory=DirectoryResponse.model_validate(directory),
-            pdfs_ingested=0,
-            chunks_created=0,
-            message="No PDFs to ingest (all already processed or no documents found)",
-        )
-    
-    # Use sync engine for ingestion (like ingest.py)
-    engine = create_engine(settings.database_url_sync)
-    total_chunks = 0
-    
-    with Session(engine) as session:
-        for pdf_path, rel_path in pdfs_to_process:
-            doc_id, stored_rel_path = doc_map[pdf_path.name]
-            try:
-                chunks = ingest_pdf_from_directory(
-                    session, pdf_path, stored_rel_path or rel_path, directory_id, doc_id
-                )
-                total_chunks += chunks
-            except Exception as e:
-                # Continue with other PDFs on error
-                print(f"Error ingesting {pdf_path.name}: {e}")
-                continue
-    
-    await db.refresh(directory)
-    
-    return DirectoryIngestResponse(
-        directory=DirectoryResponse.model_validate(directory),
-        pdfs_ingested=len(pdfs_to_process),
-        chunks_created=total_chunks,
-        message=f"Successfully ingested {len(pdfs_to_process)} PDFs ({total_chunks} chunks)",
-    )

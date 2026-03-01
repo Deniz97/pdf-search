@@ -188,8 +188,8 @@ def main():
         while True:
             response = client.chat.completions.create(
                 model=settings.chat_model,
-                messages=messages,
-                tools=TOOLS,
+                messages=messages,  # type: ignore[arg-type]
+                tools=TOOLS,  # type: ignore[arg-type]
             )
 
             choice = response.choices[0]
@@ -198,10 +198,12 @@ def main():
             if msg.tool_calls:
                 messages.append(msg.model_dump())
                 for tool_call in msg.tool_calls:
-                    fn_name = tool_call.function.name
-                    fn_args = json.loads(tool_call.function.arguments)
+                    fn_name = tool_call.function.name  # type: ignore[attr-defined]
+                    fn_args = json.loads(tool_call.function.arguments)  # type: ignore[attr-defined]
 
-                    print(f"  [tool] {fn_name}({json.dumps(fn_args, ensure_ascii=False)})")
+                    print(
+                        f"  [tool] {fn_name}({json.dumps(fn_args, ensure_ascii=False)})"
+                    )
                     result = execute_tool_call(fn_name, fn_args)
 
                     messages.append(

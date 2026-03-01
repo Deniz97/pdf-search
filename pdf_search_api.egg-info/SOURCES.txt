@@ -6,7 +6,6 @@ app/cache.py
 app/chat.py
 app/config.py
 app/database.py
-app/directory_service.py
 app/embeddings.py
 app/ingest.py
 app/main.py
@@ -22,5 +21,7 @@ pdf_search_api.egg-info/top_level.txt
 static/style.css
 templates/base.html
 templates/chat.html
+templates/document_detail.html
+templates/documents.html
 templates/search.html
 templates/search_results.html

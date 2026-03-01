@@ -29,7 +29,7 @@
 <script>
     let messages = [];
 
-    function addMessage(role, content, toolCalls = null) {
+    function addMessage(role, content) {
         const messagesDiv = document.getElementById('chat-messages');
         
         // Remove empty state if present
@@ -50,28 +50,7 @@
         messageDiv.appendChild(roleDiv);
         messageDiv.appendChild(contentDiv);
 
-        if (toolCalls) {
-            const toolCallDiv = document.createElement('div');
-            toolCallDiv.className = 'tool-call';
-            toolCallDiv.innerHTML = '<strong>Searching documents...</strong>';
-            messageDiv.appendChild(toolCallDiv);
-        }
-
         messagesDiv.appendChild(messageDiv);
-        messagesDiv.scrollTop = messagesDiv.scrollHeight;
-    }
-
-    function addToolResult(result) {
-        const messagesDiv = document.getElementById('chat-messages');
-        const toolDiv = document.createElement('div');
-        toolDiv.className = 'message';
-        toolDiv.innerHTML = `
-            <div class="tool-call">
-                <strong>Tool Result:</strong>
-                <pre style="margin-top: 0.5rem; font-size: 0.875rem; white-space: pre-wrap;">${result}</pre>
-            </div>
-        `;
-        messagesDiv.appendChild(toolDiv);
         messagesDiv.scrollTop = messagesDiv.scrollHeight;
     }
 
@@ -87,87 +66,53 @@
         input.disabled = true;
 
         // Show loading
+        const messagesDiv = document.getElementById('chat-messages');
         addMessage('assistant', 'Thinking...');
         const loadingMsg = messagesDiv.lastElementChild;
 
         try {
-            // Handle tool calling loop (max 5 iterations)
-            for (let i = 0; i < 5; i++) {
-                const response = await fetch('/api/v1/chat', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ messages })
-                });
+            // Send request - server handles tool calls internally
+            const response = await fetch('/api/v1/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ messages })
+            });
 
-                if (!response.ok) {
-                    throw new Error('Chat failed');
+            if (!response.ok) {
+                const errorText = await response.text();
+                let errorMsg = 'Chat failed';
+                try {
+                    const errorJson = JSON.parse(errorText);
+                    errorMsg = errorJson.detail || errorMsg;
+                } catch (e) {
+                    errorMsg = errorText || errorMsg;
                 }
-
-                const data = await response.json();
-
-                if (data.tool_calls && data.tool_calls.length > 0) {
-                    // Remove loading message
-                    if (loadingMsg && loadingMsg.parentNode) {
-                        loadingMsg.remove();
-                    }
-
-                    // Add assistant message showing search
-                    addMessage('assistant', 'Searching documents...', true);
-                    messages.push({ role: 'assistant', content: '' });
-
-                    // Execute all tool calls
-                    for (const toolCall of data.tool_calls) {
-                        const toolName = toolCall.function.name;
-                        const toolArgs = JSON.parse(toolCall.function.arguments);
-
-                        try {
-                            const toolResponse = await fetch('/api/v1/chat/tool', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                    tool_name: toolName,
-                                    arguments: toolArgs
-                                })
-                            });
-
-                            if (!toolResponse.ok) throw new Error('Tool execution failed');
-                            const toolData = await toolResponse.json();
-                            
-                            addToolResult(toolData.result);
-                            messages.push({
-                                role: 'tool',
-                                content: toolData.result,
-                                tool_call_id: toolCall.id
-                            });
-                        } catch (err) {
-                            const errorResult = JSON.stringify({ error: err.message });
-                            addToolResult(errorResult);
-                            messages.push({
-                                role: 'tool',
-                                content: errorResult,
-                                tool_call_id: toolCall.id
-                            });
-                        }
-                    }
-
-                    // Continue loop to get final response
-                    addMessage('assistant', 'Thinking...');
-                    continue;
-                } else {
-                    // Final assistant response
-                    if (loadingMsg && loadingMsg.parentNode) {
-                        loadingMsg.remove();
-                    }
-                    addMessage('assistant', data.message.content);
-                    messages.push({ role: 'assistant', content: data.message.content });
-                    break;
-                }
+                throw new Error(errorMsg);
             }
-        } catch (err) {
+
+            const data = await response.json();
+            console.log('Chat response:', data);
+
+            // Remove loading message
             if (loadingMsg && loadingMsg.parentNode) {
                 loadingMsg.remove();
             }
-            addMessage('assistant', `Error: ${err.message}`);
+
+            // Display final assistant response
+            const assistantContent = data.message?.content || '';
+            if (assistantContent) {
+                addMessage('assistant', assistantContent);
+                messages.push({ role: 'assistant', content: assistantContent });
+            } else {
+                addMessage('assistant', 'No response received');
+            }
+        } catch (err) {
+            const messagesDiv = document.getElementById('chat-messages');
+            if (loadingMsg && loadingMsg.parentNode) {
+                loadingMsg.remove();
+            }
+            console.error('Chat error:', err);
+            addMessage('assistant', `Error: ${err.message || 'Unknown error occurred'}`);
         } finally {
             input.disabled = false;
             input.focus();

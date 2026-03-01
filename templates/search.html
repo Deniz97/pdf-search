@@ -10,7 +10,6 @@
           hx-target="#results" 
           hx-swap="innerHTML"
           hx-indicator="#loading"
-          hx-headers='{"Content-Type": "application/json"}'
           class="search-form">
         <input 
             type="text" 
@@ -23,23 +22,11 @@
         <button type="submit" class="search-button">Search</button>
     </form>
 
-    <div id="loading" class="htmx-indicator loading">Searching...</div>
+    <div id="loading" class="htmx-indicator loading">
+        <div class="loading-spinner"></div>
+        <span class="loading-text">Searching...</span>
+    </div>
 
     <div id="results"></div>
 </div>
-
-<script>
-    // Handle form submission with proper JSON
-    document.querySelector('form').addEventListener('htmx:configRequest', function(evt) {
-        const form = evt.detail.elt;
-        const query = form.querySelector('input[name="query"]').value;
-        const topK = parseInt(form.querySelector('input[name="top_k"]').value);
-        
-        evt.detail.headers['Content-Type'] = 'application/json';
-        evt.detail.body = JSON.stringify({
-            query: query,
-            top_k: topK
-        });
-    });
-</script>
 {% endblock %}

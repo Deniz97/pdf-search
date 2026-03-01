@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block title %}{{ document.filename }} - PDF Search{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="document-header">
+        <a href="/documents" class="back-link">← Back to Documents</a>
+        <h1>{{ document.filename }}</h1>
+        <div class="document-info">
+            <div class="info-item">
+                <strong>Status:</strong>
+                <span class="status-badge status-{{ document.processed_status }}">
+                    {{ document.processed_status }}
+                </span>
+            </div>
+            <div class="info-item">
+                <strong>Pages:</strong> {{ document.page_count }}
+            </div>
+            <div class="info-item">
+                <strong>Uploaded:</strong> 
+                {% if document.created_at %}
+                    {{ document.created_at.strftime('%Y-%m-%d %H:%M') }}
+                {% else %}
+                    N/A
+                {% endif %}
+            </div>
+            {% if document.last_processed_at %}
+            <div class="info-item">
+                <strong>Last Processed:</strong> {{ document.last_processed_at.strftime('%Y-%m-%d %H:%M') }}
+            </div>
+            {% endif %}
+            {% if document.last_process_error %}
+            <div class="info-item error-info">
+                <strong>Error:</strong> {{ document.last_process_error }}
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="chunks-section">
+        <h2>Chunks ({{ chunks|length }})</h2>
+        {% if chunks %}
+        <div class="chunks-list">
+            {% for chunk in chunks %}
+            <div class="chunk-item">
+                <div class="chunk-header">
+                    <span class="chunk-meta">
+                        Page {{ chunk.page_number or 'N/A' }} • Chunk {{ chunk.chunk_index }}
+                    </span>
+                </div>
+                <div class="chunk-content">
+                    {{ chunk.content }}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <p>No chunks available for this document.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

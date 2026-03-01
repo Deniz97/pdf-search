@@ -18,6 +18,14 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
         yield session
 
 
+async def reset_db():
+    """Drop all tables to reset the database."""
+    import app.models  # noqa: F401 — ensure models are registered with Base.metadata
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+
+
 async def init_db():
     import app.models  # noqa: F401 — ensure models are registered with Base.metadata
 

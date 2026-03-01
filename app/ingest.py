@@ -1,5 +1,6 @@
 """Ingest all PDFs from a directory into the vector database."""
 
+import argparse
 import shutil
 import sys
 from datetime import datetime
@@ -31,21 +32,29 @@ def _update_status(
     session.commit()
 
 
-def ingest_pdf(session: Session, pdf_path: Path) -> int:
-    """Process a single PDF and store its chunks. Returns chunk count."""
+def ingest_pdf(session: Session, pdf_path: Path, reingest: bool = False) -> int:
+    """Process a single PDF and store its chunks. Returns chunk count.
+
+    Args:
+        session: Database session
+        pdf_path: Path to PDF file
+        reingest: If True, re-process even if already finished
+    """
 
     existing = session.execute(
         text("SELECT id, processed_status FROM documents WHERE filename = :name"),
         {"name": pdf_path.name},
     ).fetchone()
 
-    if existing and existing.processed_status == "finished":
+    if existing and existing.processed_status == "finished" and not reingest:
         print(f"  Already ingested '{pdf_path.name}', skipping.")
         return 0
 
     if existing:
         doc_id = str(existing.id)
-        session.execute(text("DELETE FROM chunks WHERE document_id = :id"), {"id": doc_id})
+        session.execute(
+            text("DELETE FROM chunks WHERE document_id = :id"), {"id": doc_id}
+        )
         session.commit()
     else:
         doc_id = str(
@@ -116,9 +125,7 @@ def ingest_pdf(session: Session, pdf_path: Path) -> int:
 
         session.commit()
         _update_status(session, doc_id, "finished")
-        print(
-            f"  Ingested '{pdf_path.name}': {len(pages)} pages, {len(chunks)} chunks"
-        )
+        print(f"  Ingested '{pdf_path.name}': {len(pages)} pages, {len(chunks)} chunks")
         return len(chunks)
 
     except Exception as e:
@@ -127,7 +134,7 @@ def ingest_pdf(session: Session, pdf_path: Path) -> int:
         raise
 
 
-def main(directory: str = "example-pdfs"):
+def main(directory: str = "example-pdfs", reingest: bool = False):
     pdf_dir = Path(directory)
     if not pdf_dir.is_dir():
         print(f"Error: '{directory}' is not a directory")
@@ -143,13 +150,18 @@ def main(directory: str = "example-pdfs"):
         print(f"  - {p.name}")
     print()
 
+    if reingest:
+        print(
+            "Reingest mode: will re-process all PDFs, including already finished ones.\n"
+        )
+
     engine = create_engine(settings.database_url_sync)
 
     with Session(engine) as session:
         total_chunks = 0
         for pdf_path in pdfs:
             try:
-                total_chunks += ingest_pdf(session, pdf_path)
+                total_chunks += ingest_pdf(session, pdf_path, reingest=reingest)
             except Exception as e:
                 print(f"  ERROR processing '{pdf_path.name}': {e}")
 
@@ -157,5 +169,17 @@ def main(directory: str = "example-pdfs"):
 
 
 if __name__ == "__main__":
-    directory = sys.argv[1] if len(sys.argv) > 1 else "example-pdfs"
-    main(directory)
+    parser = argparse.ArgumentParser(description="Ingest PDFs into the vector database")
+    parser.add_argument(
+        "directory",
+        nargs="?",
+        default="example-pdfs",
+        help="Directory containing PDF files to ingest (default: example-pdfs)",
+    )
+    parser.add_argument(
+        "--reingest",
+        action="store_true",
+        help="Re-process all PDFs, including those already finished",
+    )
+    args = parser.parse_args()
+    main(directory=args.directory, reingest=args.reingest)

@@ -10,7 +10,7 @@ The ingestion pipeline processes PDFs into searchable vector chunks. Entry point
 1. **Register document** — insert row with `processed_status='waiting'`, get UUID
 2. **Copy PDF** — to `cache/{doc_id}/source.pdf`
 3. **pdf2image** — convert to page PNGs, cached at `cache/{doc_id}/images/`
-4. **OCR** — pytesseract on each image, cached at `cache/{doc_id}/ocr/pages.json`
+4. **OCR** — pytesseract on each image, cached at `cache/{doc_id}/text/` (one .txt file per page)
 5. **Chunk** — 5-sentence windows with 1-sentence overlap
 6. **Embed** — OpenAI `text-embedding-3-small`, batched in groups of 100
 7. **Store** — insert chunks with embeddings into `chunks` table
@@ -29,7 +29,7 @@ waiting → started → finished
 cache/{doc_id}/
   source.pdf
   images/page_0001.png, page_0002.png, ...
-  ocr/pages.json
+  text/page_0001.txt, page_0002.txt, ...
 ```
 
 ## Patterns
