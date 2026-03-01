@@ -1,0 +1,35 @@
+[project]
+name = "pdf-search-api"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "asyncpg>=0.31.0",
+    "fastapi>=0.135.0",
+    "greenlet>=3.3.2",
+    "openai>=2.24.0",
+    "pdf2image>=1.17.0",
+    "pgvector>=0.4.2",
+    "psycopg2-binary>=2.9.11",
+    "pydantic>=2.12.5",
+    "pydantic-settings>=2.13.1",
+    "pytesseract>=0.3.13",
+    "python-multipart>=0.0.22",
+    "sqlalchemy>=2.0.47",
+    "uvicorn>=0.41.0",
+    "jinja2>=3.1.4",
+    "aiofiles>=24.1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.408",
+    "ruff>=0.15.4",
+]
+
+[tool.setuptools]
+packages = ["app"]
+
+[tool.setuptools.package-data]
+"*" = ["*.txt", "*.md"]

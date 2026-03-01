@@ -1,0 +1,48 @@
+---
+globs: "**/chat.py"
+---
+# CLI Chatbot
+
+## Context
+`app/chat.py` is an interactive CLI chatbot that uses OpenAI tool calling to search the document database. It maintains conversation history and lets the LLM decide when and how to search.
+
+## Architecture
+- Sync SQLAlchemy (`database_url_sync`) for DB queries
+- OpenAI Chat Completions API with `tools` parameter
+- Inner loop: keeps calling the LLM until it responds without tool calls
+
+## Tools Exposed to LLM
+
+### `search(query: str)`
+Semantic search across ALL documents. Uses cosine distance (`<=>`) on pgvector. Returns top 8 chunks with document name, page, score, content.
+
+### `search_in_book(book_name: str, query: str)`
+Same as `search` but filtered to a specific document by exact filename match (`WHERE d.filename = :book_name`).
+
+## System Prompt
+Built dynamically at startup from the database. Includes:
+- Full list of document filenames with page counts
+- Instructions to use tools and cite sources
+
+## Patterns
+
+### Tool execution loop
+```python
+while True:
+    response = client.chat.completions.create(model=..., messages=..., tools=TOOLS)
+    if msg.tool_calls:
+        # append assistant message, execute tools, append tool results
+        continue
+    # no tool calls — print response and break
+    break
+```
+
+### Adding new tools
+1. Add tool definition to `TOOLS` list (OpenAI function calling schema)
+2. Implement the function (query DB, return list of dicts)
+3. Add case to `execute_tool_call()`
+
+## Anti-patterns
+- **Don't use async** — this is a sync CLI script, use `Session` not `AsyncSession`
+- **Don't forget to append tool results** — every `tool_call` must have a matching `role: "tool"` message with the same `tool_call_id`
+- **Don't serialize embeddings as lists** — pass as `str(embedding)` for pgvector text format

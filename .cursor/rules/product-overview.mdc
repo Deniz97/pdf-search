@@ -1,0 +1,64 @@
+---
+alwaysApply: true
+---
+# Product Overview
+
+## What It Does
+A PDF document search service. Users upload PDFs, the system extracts text via OCR, embeds it into vectors, and stores them in PostgreSQL+pgvector. Users can then search documents with natural language via web UI, REST API, or CLI chatbot.
+
+## Three Interfaces
+
+### Web UI (`templates/`, `app/main.py`)
+- **Search Page** (`/`) — Query box with HTMX, displays matched chunks with document info and scores
+- **Chat Page** (`/chat`) — Interactive chat interface with tool calling (replicates CLI chatbot)
+- Server-side rendered with Jinja2 templates, single-process architecture
+
+### REST API (`app/routes.py`)
+- `POST /api/v1/documents/upload` — Upload and process a single PDF
+- `POST /api/v1/documents/query` — Semantic search + LLM-generated answer
+- `POST /api/v1/documents/search` — Search-only endpoint (returns chunks, no LLM answer)
+- `POST /api/v1/chat` — Chat endpoint with tool calling support
+- `GET /api/v1/documents` — List all documents
+- Endpoints detect HTMX requests and return HTML fragments when appropriate
+
+### CLI Chatbot (`app/chat.py`)
+- Interactive REPL with conversation history
+- LLM uses OpenAI tool calling to decide when to search
+- Two tools: `search(query)` across all docs, `search_in_book(book_name, query)` for a specific doc
+- System prompt includes the full document list with page counts
+
+## Data Flow
+1. PDF uploaded → pdf2image → page images (cached)
+2. Page images → pytesseract OCR → text per page (cached)
+3. Text → sentence splitting → 5-sentence chunks with 1-sentence overlap
+4. Chunks → OpenAI embedding → stored in pgvector
+5. Query → embed → cosine distance search → top-K chunks → LLM answer
+
+## Batch Ingestion (`app/ingest.py`)
+- `make ingest` processes all PDFs in `example-pdfs/`
+- Tracks processing status per document: `waiting` → `started` → `finished` / `errored`
+- Skips already-finished documents on re-run
+- Retries errored documents, reusing cached images/OCR
+
+## Project Structure
+```
+app/
+├── main.py            # FastAPI app, lifespan, template routes (/ and /chat)
+├── config.py          # pydantic-settings
+├── database.py        # async SQLAlchemy engine, init_db
+├── models.py          # Document, Chunk (SQLAlchemy)
+├── schemas.py         # Pydantic request/response models
+├── routes.py          # API endpoints (handles HTMX requests for HTML fragments)
+├── pdf_processing.py  # pdf2image, OCR, chunking
+├── embeddings.py      # OpenAI embeddings + LLM
+├── cache.py           # Disk cache for images/OCR
+├── ingest.py          # Batch PDF ingestion CLI
+└── chat.py            # Interactive chatbot CLI
+templates/
+├── base.html          # Base template with navigation
+├── search.html        # Search page template
+├── chat.html          # Chat page template
+└── search_results.html # Search results fragment (for HTMX)
+static/
+└── style.css          # Global stylesheet
+```

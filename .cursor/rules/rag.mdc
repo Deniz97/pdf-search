@@ -1,0 +1,69 @@
+---
+globs: "**/embeddings.py,**/routes.py,**/models.py,**/schemas.py"
+---
+# RAG (Retrieval-Augmented Generation)
+
+## Context
+The RAG system embeds document chunks via OpenAI, stores them in pgvector, retrieves by cosine similarity, and generates answers with an LLM. Core files: `embeddings.py` (OpenAI calls), `routes.py` (API search), `models.py` (schema), `schemas.py` (Pydantic).
+
+## Embedding
+- Model: `text-embedding-3-small` (1536 dimensions)
+- Batch API: `get_embeddings(texts: list[str])` for bulk, `get_embedding(text: str)` for single
+- Stored in `chunks.embedding` column (`Vector(1536)` via pgvector)
+
+## Vector Search
+- Operator: `<=>` (cosine distance) — lower = more similar
+- Score displayed as `1 - distance` (higher = better)
+- Always use `ORDER BY embedding <=> :embedding LIMIT :limit`
+- Embedding param must be passed as `str(embedding)` for pgvector text format
+
+### Search query pattern
+```sql
+SELECT c.content, c.page_number, c.chunk_index,
+       d.filename,
+       c.embedding <=> :embedding AS distance
+FROM chunks c
+JOIN documents d ON d.id = c.document_id
+ORDER BY c.embedding <=> :embedding
+LIMIT :limit
+```
+
+## LLM Answer Generation
+- Model: `gpt-4o-mini`
+- System prompt instructs to only use provided context
+- Context: top-K chunks joined with `---` separators
+- Used in API (`ask_llm`) and CLI chatbot (tool calling)
+
+## Database Models
+
+### Document
+| Column | Type | Notes |
+|--------|------|-------|
+| id | UUID | PK, auto-generated |
+| filename | VARCHAR | Original PDF name |
+| page_count | INTEGER | Total OCR'd pages |
+| processed_status | VARCHAR | waiting/started/finished/errored |
+| last_processed_at | TIMESTAMP | Nullable |
+| last_process_error | TEXT | Nullable, set on error |
+| created_at | TIMESTAMP | Auto-set |
+
+### Chunk
+| Column | Type | Notes |
+|--------|------|-------|
+| id | UUID | PK |
+| document_id | UUID | FK → documents, CASCADE delete |
+| content | TEXT | Chunk text |
+| page_number | INTEGER | Source page |
+| chunk_index | INTEGER | Sequential index |
+| embedding | Vector(1536) | pgvector column |
+
+## Chunking Strategy
+- Split text into sentences via regex: `(?<=[.!?])\s+`
+- Window: 5 sentences per chunk, 1 sentence overlap
+- Configurable via `settings.chunk_sentences` and `settings.chunk_overlap`
+
+## Anti-patterns
+- **Don't use L2 distance** — use cosine distance (`<=>`) for text embeddings
+- **Don't embed empty strings** — filter before calling OpenAI
+- **Don't change embedding dimensions without re-ingesting** — the `Vector(1536)` column and all stored embeddings must match
+- **Don't pass embedding as a Python list to SQL** — always use `str(embedding)` for pgvector's text input format

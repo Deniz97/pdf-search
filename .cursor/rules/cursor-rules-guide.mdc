@@ -1,0 +1,64 @@
+---
+alwaysApply: true
+---
+# Cursor Rules Guide (.cursor/rules/*.mdc)
+
+## Purpose
+
+Cursor Rules provide AI assistants with essential codebase context, architecture patterns, and coding preferences without consuming excessive context tokens.
+
+## IMPORTANT
+
+- Files are `.mdc` files (markdown with frontmatter) in .cursor/rules folder.
+- NEVER generate `.md` documentation files - always use cursor rule files (`.mdc`)
+- README.md files are exceptions for project overview and package documentation
+
+## File Structure & Scoping
+
+### Always Applied Rules
+
+Use `alwaysApply: true` for global, foundational documentation:
+
+- `tech-stack.mdc` - Core technologies and architecture
+- `product-overview.mdc` - Project context and functionality
+- `cursor-rules-guide.mdc` - This guide
+
+### Glob-Scoped Rules
+
+Use `globs: pattern1,pattern2,pattern3` for specialized documentation:
+
+- `selenium-scraping.mdc` → `**/browser.py`
+- `ocr.mdc` → `**/ocr.py`
+- `llm-usage.mdc` → `**/llm.py`
+- `vision.mdc` → `**/vision.py`
+
+## Scope vs Detail Balance
+
+**Rule: More focused scope = More detail allowed; Broader scope = Must be brief**
+
+- **Highly focused scope** (1-3 specific files): Can be detailed (100-200 lines), include patterns and examples
+  - Example: `**/api/chat/route.ts,**/lib/agent-classifier.ts`
+- **Moderate scope** (directory or feature): Should be concise (50-100 lines), focus on key patterns only
+  - Example: `**/components/**/*.tsx,**/hooks/**/*.ts`
+- **Broad scope** (multiple directories): Must be brief (30-50 lines), general principles only
+  - Example: `**/api/**/*.ts` (too broad, avoid this)
+- **Critical rule**: If glob matches 10+ files, keep content under 100 lines
+
+## Content Guidelines
+
+- **Be direct and specific** - Avoid unnecessary prose
+- **Use clear structure** - Organize with headings and bullet points
+- **Include patterns** - Standard approaches and conventions
+- **Include anti-patterns** - What to avoid and why
+- **Provide examples** - Real code snippets from the codebase
+- **Keep concise** - 50-200 lines typically
+
+## Essential Sections
+
+- **Context** - Brief component/system purpose
+- **Patterns** - Standard approaches for common tasks
+- **Anti-patterns** - Practices to avoid
+- **Examples** - Code snippets demonstrating patterns
+- **Best Practices** - Security, performance, maintainability
+
+## Example Structure

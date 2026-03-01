@@ -1,0 +1,30 @@
+{% if results %}
+<div class="results-container">
+    <div class="results-header">
+        Found {{ results|length }} result{{ 's' if results|length != 1 else '' }}
+    </div>
+    {% for result in results %}
+    <div class="result-item">
+        <div class="result-header">
+            <div class="result-doc">
+                {{ result.document_filename or 'Unknown Document' }}
+            </div>
+            <div class="result-meta">
+                {% if result.page_number is not none %}
+                <span>Page {{ result.page_number + 1 }}</span>
+                {% endif %}
+                <span class="result-score">
+                    Score: {{ "%.4f"|format(result.score) }}
+                </span>
+            </div>
+        </div>
+        <div class="result-content">{{ result.content }}</div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="empty-state">
+    <h2>No results found</h2>
+    <p>Try a different search query.</p>
+</div>
+{% endif %}

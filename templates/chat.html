@@ -1,0 +1,189 @@
+{% extends "base.html" %}
+
+{% block title %}Chat - PDF Search{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h1>Chat with Documents</h1>
+
+    <div class="chat-container">
+        <div id="chat-messages" class="chat-messages">
+            <div class="empty-state">
+                <h2>Start a conversation</h2>
+                <p>Ask questions about your uploaded documents.</p>
+            </div>
+        </div>
+
+        <form id="chat-form" class="chat-input-container">
+            <textarea 
+                id="chat-input" 
+                name="message"
+                placeholder="Type your message... (Shift+Enter for new line)"
+                class="chat-input"
+                rows="1"></textarea>
+            <button type="submit" class="send-button">Send</button>
+        </form>
+    </div>
+</div>
+
+<script>
+    let messages = [];
+
+    function addMessage(role, content, toolCalls = null) {
+        const messagesDiv = document.getElementById('chat-messages');
+        
+        // Remove empty state if present
+        const emptyState = messagesDiv.querySelector('.empty-state');
+        if (emptyState) emptyState.remove();
+
+        const messageDiv = document.createElement('div');
+        messageDiv.className = `message message-${role}`;
+        
+        const roleDiv = document.createElement('div');
+        roleDiv.className = 'message-role';
+        roleDiv.textContent = role === 'user' ? 'You' : 'Assistant';
+        
+        const contentDiv = document.createElement('div');
+        contentDiv.className = 'message-content';
+        contentDiv.textContent = content;
+        
+        messageDiv.appendChild(roleDiv);
+        messageDiv.appendChild(contentDiv);
+
+        if (toolCalls) {
+            const toolCallDiv = document.createElement('div');
+            toolCallDiv.className = 'tool-call';
+            toolCallDiv.innerHTML = '<strong>Searching documents...</strong>';
+            messageDiv.appendChild(toolCallDiv);
+        }
+
+        messagesDiv.appendChild(messageDiv);
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+
+    function addToolResult(result) {
+        const messagesDiv = document.getElementById('chat-messages');
+        const toolDiv = document.createElement('div');
+        toolDiv.className = 'message';
+        toolDiv.innerHTML = `
+            <div class="tool-call">
+                <strong>Tool Result:</strong>
+                <pre style="margin-top: 0.5rem; font-size: 0.875rem; white-space: pre-wrap;">${result}</pre>
+            </div>
+        `;
+        messagesDiv.appendChild(toolDiv);
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+
+    async function sendMessage() {
+        const input = document.getElementById('chat-input');
+        const message = input.value.trim();
+        if (!message) return;
+
+        // Add user message
+        addMessage('user', message);
+        messages.push({ role: 'user', content: message });
+        input.value = '';
+        input.disabled = true;
+
+        // Show loading
+        addMessage('assistant', 'Thinking...');
+        const loadingMsg = messagesDiv.lastElementChild;
+
+        try {
+            // Handle tool calling loop (max 5 iterations)
+            for (let i = 0; i < 5; i++) {
+                const response = await fetch('/api/v1/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ messages })
+                });
+
+                if (!response.ok) {
+                    throw new Error('Chat failed');
+                }
+
+                const data = await response.json();
+
+                if (data.tool_calls && data.tool_calls.length > 0) {
+                    // Remove loading message
+                    if (loadingMsg && loadingMsg.parentNode) {
+                        loadingMsg.remove();
+                    }
+
+                    // Add assistant message showing search
+                    addMessage('assistant', 'Searching documents...', true);
+                    messages.push({ role: 'assistant', content: '' });
+
+                    // Execute all tool calls
+                    for (const toolCall of data.tool_calls) {
+                        const toolName = toolCall.function.name;
+                        const toolArgs = JSON.parse(toolCall.function.arguments);
+
+                        try {
+                            const toolResponse = await fetch('/api/v1/chat/tool', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    tool_name: toolName,
+                                    arguments: toolArgs
+                                })
+                            });
+
+                            if (!toolResponse.ok) throw new Error('Tool execution failed');
+                            const toolData = await toolResponse.json();
+                            
+                            addToolResult(toolData.result);
+                            messages.push({
+                                role: 'tool',
+                                content: toolData.result,
+                                tool_call_id: toolCall.id
+                            });
+                        } catch (err) {
+                            const errorResult = JSON.stringify({ error: err.message });
+                            addToolResult(errorResult);
+                            messages.push({
+                                role: 'tool',
+                                content: errorResult,
+                                tool_call_id: toolCall.id
+                            });
+                        }
+                    }
+
+                    // Continue loop to get final response
+                    addMessage('assistant', 'Thinking...');
+                    continue;
+                } else {
+                    // Final assistant response
+                    if (loadingMsg && loadingMsg.parentNode) {
+                        loadingMsg.remove();
+                    }
+                    addMessage('assistant', data.message.content);
+                    messages.push({ role: 'assistant', content: data.message.content });
+                    break;
+                }
+            }
+        } catch (err) {
+            if (loadingMsg && loadingMsg.parentNode) {
+                loadingMsg.remove();
+            }
+            addMessage('assistant', `Error: ${err.message}`);
+        } finally {
+            input.disabled = false;
+            input.focus();
+        }
+    }
+
+    document.getElementById('chat-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        sendMessage();
+    });
+
+    document.getElementById('chat-input').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage();
+        }
+    });
+</script>
+{% endblock %}

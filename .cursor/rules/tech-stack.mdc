@@ -1,0 +1,62 @@
+---
+alwaysApply: true
+---
+# Tech Stack
+
+## Language & Runtime
+- **Python 3.11+** managed with **uv** (package manager, venv, runner)
+- Run everything via `uv run` or `make` targets
+
+## Web Framework
+- **FastAPI** with async endpoints, Pydantic v2 models
+- **Uvicorn** as ASGI server
+- **Jinja2** templates for server-side rendering (via `starlette.templating`)
+- **HTMX** for dynamic interactions (loaded from CDN)
+- **StaticFiles** for CSS/assets
+- API prefix: `/api/v1`
+- Web UI routes: `/` (search), `/chat` (chat interface)
+
+## Database
+- **PostgreSQL 16** via Docker (`pgvector/pgvector:pg16` image)
+- **pgvector** extension for vector similarity search
+- Host port **5433** (avoids default 5432 clashes)
+- **SQLAlchemy 2.0** with async engine (`asyncpg`) for the API, sync engine (`psycopg2`) for CLI scripts
+- No migration framework — `init_db()` uses `Base.metadata.create_all`; schema changes via raw ALTER TABLE
+
+## AI / LLM
+- **OpenAI SDK** (`openai` package)
+- Embeddings: `text-embedding-3-small` (1536 dimensions)
+- Chat: `gpt-4o-mini` with function/tool calling
+- Tool calling used in CLI chatbot for RAG queries
+
+## PDF Processing
+- **pdf2image** (requires system `poppler`) — converts PDF pages to images
+- **pytesseract** (requires system `tesseract`) — OCR on page images
+- Two-step pipeline with per-step caching in `cache/{doc_id}/`
+
+## Frontend
+- **Jinja2 templates** in `templates/` directory
+- **HTMX** for AJAX-like interactions without JavaScript framework
+- **Vanilla JavaScript** for chat page (handles tool calling loop)
+- **Static CSS** in `static/style.css`
+- Single-process architecture — no separate frontend server
+
+## Dev Tools
+- **ruff** — formatting and linting
+- **pyright** — type checking
+
+## Key Config
+- All settings via `pydantic-settings` (`app/config.py`), loaded from `.env`
+- `DATABASE_URL`, `DATABASE_URL_SYNC`, `OPENAI_API_KEY` are the critical env vars
+
+## Make Targets
+| Command | Purpose |
+|---------|---------|
+| `make deps` | `uv sync` |
+| `make dev` | Start FastAPI with hot reload |
+| `make format` | ruff format + check --fix |
+| `make typecheck` | pyright |
+| `make db-up/down` | Docker Compose up/down |
+| `make migrate` | Create tables + pgvector extension |
+| `make ingest` | Ingest all PDFs from `example-pdfs/` |
+| `make chat` | Interactive CLI chatbot |

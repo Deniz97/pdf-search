@@ -1,0 +1,60 @@
+---
+globs: "**/ingest.py,**/pdf_processing.py,**/cache.py"
+---
+# Ingestion Pipeline
+
+## Context
+The ingestion pipeline processes PDFs into searchable vector chunks. Entry point is `app/ingest.py`, orchestrating `app/pdf_processing.py` and `app/cache.py`.
+
+## Pipeline Steps
+1. **Register document** — insert row with `processed_status='waiting'`, get UUID
+2. **Copy PDF** — to `cache/{doc_id}/source.pdf`
+3. **pdf2image** — convert to page PNGs, cached at `cache/{doc_id}/images/`
+4. **OCR** — pytesseract on each image, cached at `cache/{doc_id}/ocr/pages.json`
+5. **Chunk** — 5-sentence windows with 1-sentence overlap
+6. **Embed** — OpenAI `text-embedding-3-small`, batched in groups of 100
+7. **Store** — insert chunks with embeddings into `chunks` table
+8. **Finalize** — set `processed_status='finished'`
+
+## Document Status Lifecycle
+```
+waiting → started → finished
+                  → errored (with last_process_error set)
+```
+- `finished` documents are skipped on re-run
+- `errored`/`started` documents retry, reusing cached steps
+
+## Cache Structure
+```
+cache/{doc_id}/
+  source.pdf
+  images/page_0001.png, page_0002.png, ...
+  ocr/pages.json
+```
+
+## Patterns
+
+### Always check cache before processing
+```python
+if cache.has_cached_images(doc_id):
+    return cache.load_images(doc_id)
+images = convert_from_path(pdf_path)
+cache.save_images(doc_id, images)
+```
+
+### Always update status on error
+```python
+except Exception as e:
+    session.rollback()
+    _update_status(session, doc_id, "errored", str(e))
+    raise
+```
+
+### Use sync SQLAlchemy for CLI scripts
+The ingest script uses `create_engine(settings.database_url_sync)` with `psycopg2`, not the async engine. Only the FastAPI API uses async.
+
+## Anti-patterns
+- **Don't skip the cache check** — OCR is expensive (seconds per page); always check before running
+- **Don't use the async engine in CLI scripts** — use `database_url_sync` with `Session`
+- **Don't hardcode batch sizes** — use the `batch_size` variable (currently 100 for embeddings)
+- **Don't commit before all chunks are inserted** — commit once after the full embedding loop
