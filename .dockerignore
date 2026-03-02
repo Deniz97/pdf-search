@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+uploads/
+cache/
+downloaded-pdfs/
+.git/
+.ruff_cache/
+dist/
+example-pdfs/
