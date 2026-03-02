@@ -1,6 +1,7 @@
 """CLI for batch ingest: ingest N|ALL, reingest N|ALL, prune."""
 
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import create_engine, text
@@ -30,6 +31,14 @@ def get_db_path_to_id(session: Session) -> dict[str, str]:
         text("SELECT id, path FROM documents WHERE path IS NOT NULL")
     ).fetchall()
     return {str(r.path): str(r.id) for r in rows}
+
+
+def get_db_path_to_created_at(session: Session) -> dict[str, datetime]:
+    """Return mapping of path -> created_at for docs with path set (for reingest ordering)."""
+    rows = session.execute(
+        text("SELECT path, created_at FROM documents WHERE path IS NOT NULL")
+    ).fetchall()
+    return {str(r.path): r.created_at for r in rows}
 
 
 def parse_count(s: str) -> int | None:
@@ -70,6 +79,7 @@ def cmd_ingest(
 
     with Session(engine) as session:
         path_to_id = get_db_path_to_id(session) if not reingest else {}
+        path_to_created_at = get_db_path_to_created_at(session) if reingest else {}
 
         # Build list to process
         to_process: list[Path] = []
@@ -87,6 +97,12 @@ def cmd_ingest(
                 != "finished"
             ):
                 to_process.append(p)
+
+        # Reingest: sort by oldest ingested first (created_at ASC); new docs at end
+        if reingest and path_to_created_at:
+            to_process.sort(
+                key=lambda p: path_to_created_at.get(str(p.resolve()), datetime.max)
+            )
 
         if count is not None:
             to_process = to_process[:count]

@@ -17,6 +17,7 @@ We use uv with python 3.11. To run, simply install "uv" (https://github.com/astr
 
 $ make deps
 $ make build
+$ make dev -> server is running
 
 
 And you are set.
@@ -40,11 +41,22 @@ Then we employ a scoring algorithm to bring all those different kind of matching
 
 ## DATA
 
-As an example data, I manually downloaded around 40 contemporary geopolitics related PDFs from the web, all under 20 pages.
+As an example data, I manually downloaded around 40 contemporary geopolitics related PDFs from the web, all under 20 pages. I also have a WIP selenium progress crawler in scripts/download_pdfs.py which I could not finist.
 
 ## RESULT
+
+Each query takes around 8-10 seconds, using openai API for the llm.
 
 
 ## UI
 
-You can click on the "Documents" menu from the top bar to inspect the embedded documents, chunks and memories.
+After you run make dev, hit `http://localhost:8000` to view the ui. You can search, chat, inspect documents or generated test questions.
+
+## TODO
+
+- We can add paddleOCR to better parse the layout, helping in both chunking and detecting tables/figures etc.
+-- I tried it, but took forever on a CPU, so we can try optimize that or go for a GPU based solution.
+- We can also use multi-modal-LLM based processing for layout, more expensive yes, but when you think about it we pass whole data trough the LLM once for metadata enrichment anyway.
+- Later, we can introduce a "chunk type", to make tables and figures first class citizens in our system and handle them specially.
+- We can skip enrichment if showing the whole PDF data to the LLM is too expensive.
+- And ofc, we can improve our eval script to better confirm with user use cases.

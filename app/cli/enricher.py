@@ -1,12 +1,24 @@
 """CLI for batch enrich: enrich N|ALL, reenrich N|ALL."""
 
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.services.enricher import enrich_document
+
+DEFAULT_WORKERS = 4
+
+
+def _enrich_one(doc_id: str, filename: str, engine) -> tuple[int, str | None]:
+    """Enrich a single document with its own DB session. Returns (memories_count, error)."""
+    try:
+        with Session(engine) as session:
+            return (enrich_document(session, doc_id, filename), None)
+    except Exception as e:
+        return (0, str(e))
 
 
 def parse_count(s: str) -> int | None:
@@ -21,7 +33,7 @@ def parse_count(s: str) -> int | None:
         raise ValueError(f"Count must be a positive integer or 'ALL', got: {s!r}")
 
 
-def cmd_enrich(count: int | None, reenrich: bool) -> None:
+def cmd_enrich(count: int | None, reenrich: bool, workers: int = DEFAULT_WORKERS) -> None:
     engine = create_engine(settings.database_url_sync)
 
     with Session(engine) as session:
@@ -54,17 +66,36 @@ def cmd_enrich(count: int | None, reenrich: bool) -> None:
         if reenrich:
             print(
                 f"Re-enriching {len(rows)} document(s) "
-                "(including already finished)...\n"
+                f"(including already finished) with {workers} workers...\n"
             )
         else:
-            print(f"Enriching {len(rows)} document(s)...\n")
+            print(f"Enriching {len(rows)} document(s) with {workers} workers...\n")
 
-        total_memories = 0
-        for row in rows:
-            try:
-                total_memories += enrich_document(session, str(row.id), row.filename)
-            except Exception as e:
-                print(f"  ERROR enriching '{row.filename}': {e}")
+    total_memories = 0
+    if workers <= 1:
+        with Session(engine) as session:
+            for row in rows:
+                try:
+                    total_memories += enrich_document(
+                        session, str(row.id), row.filename
+                    )
+                except Exception as e:
+                    print(f"  ERROR enriching '{row.filename}': {e}")
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(_enrich_one, str(row.id), row.filename, engine): row
+                for row in rows
+            }
+            for future in as_completed(futures):
+                row = futures[future]
+                try:
+                    memories, err = future.result()
+                    total_memories += memories
+                    if err:
+                        print(f"  ERROR enriching '{row.filename}': {err}")
+                except Exception as e:
+                    print(f"  ERROR enriching '{row.filename}': {e}")
 
     print(f"\nDone. Total memories created: {total_memories}")
 
@@ -90,6 +121,12 @@ def main() -> None:
         metavar="N|ALL",
         help="Number of documents to process, or ALL",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=DEFAULT_WORKERS,
+        help=f"Parallel workers for document-level processing (default: {DEFAULT_WORKERS})",
+    )
     args = parser.parse_args()
 
     try:
@@ -98,7 +135,11 @@ def main() -> None:
         print(f"Error: {e}")
         sys.exit(1)
 
-    cmd_enrich(count, reenrich=(args.command == "reenrich"))
+    cmd_enrich(
+        count,
+        reenrich=(args.command == "reenrich"),
+        workers=args.workers,
+    )
 
 
 if __name__ == "__main__":

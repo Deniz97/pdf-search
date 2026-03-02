@@ -46,10 +46,10 @@ prune:
 	uv run python -m app.cli.ingest prune
 
 enrich:
-	uv run python -m app.cli.enricher enrich $(N)
+	uv run python -m app.cli.enricher enrich $(N) --workers 4
 
 reenrich:
-	uv run python -m app.cli.enricher reenrich $(N)
+	uv run python -m app.cli.enricher reenrich $(N) --workers 4
 
 chat:
 	uv run python -m app.cli.chat
@@ -58,13 +58,13 @@ chat:
 N_QUESTIONS ?= 10
 
 generate-questions:
-	uv run python -m app.cli.generate_test_questions $(N_QUESTIONS)
+	uv run python -m app.cli.generate_test_questions $(N_QUESTIONS) --workers 4
 
 # Alias for generate-questions (PHONY lists test-questions)
 test-questions: generate-questions
 
 search-eval:
-	uv run python -m app.cli.run_search_eval
+	uv run python -m app.cli.run_search_eval --documents 4 --questions-per-document 2 --workers 4
 
 download-pdfs:
-	uv run python scripts/download_pdfs.py
+	uv run python scripts/download_pdfs.py --limit

@@ -12,6 +12,7 @@ import json
 import random
 import sys
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from openai import OpenAI
 from sqlalchemy import create_engine, text
@@ -21,6 +22,8 @@ from tqdm import tqdm
 from app.config import settings
 
 client = OpenAI(api_key=settings.openai_api_key)
+
+DEFAULT_WORKERS = 4
 
 QUERY_GENERATION_SYSTEM_PROMPT = """\
 You are a search evaluation assistant. Given a document chunk and optionally a related \
@@ -137,6 +140,60 @@ def generate_queries(chunk_content: str, memories: list[dict]) -> list[tuple[str
     return []
 
 
+def _process_one_doc(
+    doc: dict,
+    per_doc: int,
+    existing_count: int,
+    existing_chunk_ids: set[str],
+    engine,
+) -> int:
+    """Process one document with its own DB session. Returns number of questions created."""
+    doc_id = str(doc["document_id"])
+    chunks = doc["chunks"]
+    if not chunks:
+        return 0
+
+    need = per_doc - existing_count
+    if need <= 0:
+        return 0
+
+    available = [c for c in chunks if str(c["chunk_id"]) not in existing_chunk_ids]
+    if not available:
+        return 0
+    n_sample = min(need, len(available))
+    sampled = random.sample(available, n_sample)
+
+    created = 0
+    with Session(engine) as session:
+        for chunk in sampled:
+            queries = generate_queries(
+                chunk["chunk_content"],
+                chunk["memories"],
+            )
+            if not queries:
+                continue
+            text_val, qtype = queries[0]
+            memory = chunk["memories"][0] if chunk["memories"] else None
+            session.execute(
+                text("""
+                    INSERT INTO search_test_questions
+                    (id, question, query_type, target_chunk_id, target_document_id, source_memory_id)
+                    VALUES (:id, :question, :query_type, :target_chunk_id, :target_document_id, :source_memory_id)
+                """),
+                {
+                    "id": str(uuid.uuid4()),
+                    "question": text_val,
+                    "query_type": qtype,
+                    "target_chunk_id": str(chunk["chunk_id"]),
+                    "target_document_id": doc_id,
+                    "source_memory_id": str(memory["id"]) if memory else None,
+                },
+            )
+            created += 1
+        session.commit()
+    return created
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Generate test questions for search evaluation (equal per document)"
@@ -148,8 +205,15 @@ def main() -> int:
         type=int,
         help="Number of questions to generate per document (default 10)",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=DEFAULT_WORKERS,
+        help=f"Parallel workers for document-level processing (default: {DEFAULT_WORKERS})",
+    )
     args = parser.parse_args()
     per_doc = max(1, args.n)
+    workers = args.workers
 
     engine = create_engine(settings.database_url_sync)
     with Session(engine) as session:
@@ -160,7 +224,9 @@ def main() -> int:
 
         # Build existing: doc_id -> (count of questions, set of chunk_ids with questions)
         existing_rows = session.execute(
-            text("SELECT target_document_id, target_chunk_id FROM search_test_questions")
+            text(
+                "SELECT target_document_id, target_chunk_id FROM search_test_questions"
+            )
         ).fetchall()
         existing_count_by_doc: dict[str, int] = {}
         existing_chunks_by_doc: dict[str, set[str]] = {}
@@ -172,56 +238,50 @@ def main() -> int:
                 existing_chunks_by_doc[did] = set()
             existing_chunks_by_doc[did].add(cid)
 
-        created = 0
-        for doc in tqdm(docs, desc="Documents"):
-            doc_id = str(doc["document_id"])
-            chunks = doc["chunks"]
-            if not chunks:
-                continue
+    # Build list of (doc, existing_count, existing_chunk_ids) for docs that need work
+    to_process: list[tuple[dict, int, set[str]]] = []
+    for doc in docs:
+        doc_id = str(doc["document_id"])
+        existing_count = existing_count_by_doc.get(doc_id, 0)
+        existing_chunks = existing_chunks_by_doc.get(doc_id, set())
+        if per_doc - existing_count <= 0:
+            continue
+        available = [c for c in doc["chunks"] if str(c["chunk_id"]) not in existing_chunks]
+        if not available:
+            continue
+        to_process.append((doc, existing_count, existing_chunks))
 
-            existing_count = existing_count_by_doc.get(doc_id, 0)
-            existing_chunks = existing_chunks_by_doc.get(doc_id, set())
-            need = per_doc - existing_count
-            if need <= 0:
-                continue
+    if not to_process:
+        print(
+            f"No documents need questions (target {per_doc} per doc, {len(docs)} documents)."
+        )
+        return 0
 
-            # Sample chunks we don't have questions for yet
-            available = [c for c in chunks if str(c["chunk_id"]) not in existing_chunks]
-            if not available:
-                continue
-            n_sample = min(need, len(available))
-            sampled = random.sample(available, n_sample)
+    created = 0
+    if workers <= 1:
+        for doc, existing_count, existing_chunk_ids in tqdm(to_process, desc="Documents"):
+            created += _process_one_doc(
+                doc, per_doc, existing_count, existing_chunk_ids, engine
+            )
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(
+                    _process_one_doc,
+                    doc,
+                    per_doc,
+                    existing_count,
+                    existing_chunk_ids,
+                    engine,
+                ): doc
+                for doc, existing_count, existing_chunk_ids in to_process
+            }
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Documents"):
+                created += future.result()
 
-            for chunk in sampled:
-                queries = generate_queries(
-                    chunk["chunk_content"],
-                    chunk["memories"],
-                )
-                if not queries:
-                    continue
-                text_val, qtype = queries[0]
-                memory = chunk["memories"][0] if chunk["memories"] else None
-                session.execute(
-                    text("""
-                        INSERT INTO search_test_questions
-                        (id, question, query_type, target_chunk_id, target_document_id, source_memory_id)
-                        VALUES (:id, :question, :query_type, :target_chunk_id, :target_document_id, :source_memory_id)
-                    """),
-                    {
-                        "id": str(uuid.uuid4()),
-                        "question": text_val,
-                        "query_type": qtype,
-                        "target_chunk_id": str(chunk["chunk_id"]),
-                        "target_document_id": doc_id,
-                        "source_memory_id": str(memory["id"]) if memory else None,
-                    },
-                )
-                created += 1
-                existing_chunks.add(str(chunk["chunk_id"]))
-
-        session.commit()
-        print(f"Created {created} test questions ({per_doc} per document, {len(docs)} documents).")
-
+    print(
+        f"Created {created} test questions ({per_doc} per document, {len(docs)} documents)."
+    )
     return 0
 
 

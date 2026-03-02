@@ -122,7 +122,7 @@ def ingest_pdf(
                     )
                 pbar.update(len(batch_chunks))
 
-        print(f"  Committing chunks to DB...")
+        print("  Committing chunks to DB...")
         session.commit()
         _update_status(session, doc_id, "finished")
         print(f"  Ingested '{pdf_path}': {page_count} pages, {len(chunks)} chunks")

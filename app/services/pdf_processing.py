@@ -95,14 +95,16 @@ def _tesseract_pages_to_chunks(
         window = all_sentences[idx:end]
         content = " ".join(s for _, s in window)
         page_number = window[0][0]
-        chunks.append({
-            "content": content,
-            "page_number": page_number,
-            "chunk_index": chunk_index,
-            "chunk_type": "text",
-            "bbox": None,
-            "order_index": chunk_index,
-        })
+        chunks.append(
+            {
+                "content": content,
+                "page_number": page_number,
+                "chunk_index": chunk_index,
+                "chunk_type": "text",
+                "bbox": None,
+                "order_index": chunk_index,
+            }
+        )
         chunk_index += 1
 
         # Overlap: step back by max(10 words, 1 sentence) from end of chunk
@@ -113,7 +115,10 @@ def _tesseract_pages_to_chunks(
             step_back += 1
             overlap_words += len(all_sentences[i][1].split())
             overlap_sentences += 1
-            if overlap_sentences >= min_overlap_sentences and overlap_words >= min_overlap_words:
+            if (
+                overlap_sentences >= min_overlap_sentences
+                and overlap_words >= min_overlap_words
+            ):
                 break
 
         next_idx = end - step_back
@@ -161,11 +166,19 @@ def _box_center(box) -> tuple[float, float]:
         if hasattr(p0, "tolist"):
             p0 = p0.tolist()
         if isinstance(p0, (list, tuple)):
-            xs = [float(p[0]) if not hasattr(p, "tolist") else float(p.tolist()[0]) for p in box[:4]]
-            ys = [float(p[1]) if not hasattr(p, "tolist") else float(p.tolist()[1]) for p in box[:4]]
+            xs = [
+                float(p[0]) if not hasattr(p, "tolist") else float(p.tolist()[0])
+                for p in box[:4]
+            ]
+            ys = [
+                float(p[1]) if not hasattr(p, "tolist") else float(p.tolist()[1])
+                for p in box[:4]
+            ]
             return (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
         if len(box) >= 4:
-            return (float(box[0]) + float(box[2])) / 2, (float(box[1]) + float(box[3])) / 2
+            return (float(box[0]) + float(box[2])) / 2, (
+                float(box[1]) + float(box[3])
+            ) / 2
     return 0.0, 0.0
 
 
@@ -177,29 +190,44 @@ def _html_table_to_text(html: str) -> str:
     return " ".join(text.split()).strip()
 
 
-def _parse_ppstructurev3_result(result, rec_texts: list | None, rec_boxes) -> list[dict]:
+def _parse_ppstructurev3_result(
+    result, rec_texts: list | None, rec_boxes
+) -> list[dict]:
     blocks = []
     res = getattr(result, "res", None) or result
     layout_res = (
-        res.get("layout_det_res") if hasattr(res, "get") else getattr(res, "layout_det_res", None)
+        res.get("layout_det_res")
+        if hasattr(res, "get")
+        else getattr(res, "layout_det_res", None)
     ) or {}
     layout_boxes = (
-        layout_res.get("boxes") if hasattr(layout_res, "get") else getattr(layout_res, "boxes", None)
+        layout_res.get("boxes")
+        if hasattr(layout_res, "get")
+        else getattr(layout_res, "boxes", None)
     ) or []
 
     if rec_texts is None or rec_boxes is None:
         ocr_res = (
-            res.get("overall_ocr_res") if hasattr(res, "get") else getattr(res, "overall_ocr_res", None)
+            res.get("overall_ocr_res")
+            if hasattr(res, "get")
+            else getattr(res, "overall_ocr_res", None)
         ) or {}
-        rec_texts = (ocr_res.get("rec_texts") if hasattr(ocr_res, "get") else getattr(ocr_res, "rec_texts", None)) or []
+        rec_texts = (
+            ocr_res.get("rec_texts")
+            if hasattr(ocr_res, "get")
+            else getattr(ocr_res, "rec_texts", None)
+        ) or []
         rec_boxes = (
             ocr_res.get("rec_boxes") or ocr_res.get("rec_polys")
             if hasattr(ocr_res, "get")
-            else getattr(ocr_res, "rec_boxes", None) or getattr(ocr_res, "rec_polys", None)
+            else getattr(ocr_res, "rec_boxes", None)
+            or getattr(ocr_res, "rec_polys", None)
         ) or []
         if hasattr(rec_boxes, "tolist"):
             rec_boxes = rec_boxes.tolist()
-        elif hasattr(rec_boxes, "__iter__") and not isinstance(rec_boxes, (list, tuple)):
+        elif hasattr(rec_boxes, "__iter__") and not isinstance(
+            rec_boxes, (list, tuple)
+        ):
             rec_boxes = list(rec_boxes)
 
     for lb in layout_boxes:
@@ -210,7 +238,12 @@ def _parse_ppstructurev3_result(result, rec_texts: list | None, rec_boxes) -> li
         coord = lb.get("coordinate") or lb.get("bbox")
         if isinstance(coord, (list, tuple)) and len(coord) >= 4:
             bbox = (
-                [min(p[0] for p in coord[:4]), min(p[1] for p in coord[:4]), max(p[0] for p in coord[:4]), max(p[1] for p in coord[:4])]
+                [
+                    min(p[0] for p in coord[:4]),
+                    min(p[1] for p in coord[:4]),
+                    max(p[0] for p in coord[:4]),
+                    max(p[1] for p in coord[:4]),
+                ]
                 if coord and isinstance(coord[0], (list, tuple))
                 else list(coord[:4])
             )
@@ -227,7 +260,11 @@ def _parse_ppstructurev3_result(result, rec_texts: list | None, rec_boxes) -> li
         content = " ".join(texts).strip()
         if chunk_type == "table" and not content:
             tbl = lb.get("res") or {}
-            content = _html_table_to_text(tbl.get("html") or tbl.get("text") or "") if isinstance(tbl, dict) else _html_table_to_text(str(tbl))
+            content = (
+                _html_table_to_text(tbl.get("html") or tbl.get("text") or "")
+                if isinstance(tbl, dict)
+                else _html_table_to_text(str(tbl))
+            )
         if content:
             blocks.append({"type": chunk_type, "content": content, "bbox": bbox})
     return blocks
@@ -243,7 +280,10 @@ def _run_ppstructure_on_images(
     engine = _get_ppstructure()
     pages_blocks: list[tuple[int, list[dict]]] = []
     for i, image in tqdm(
-        enumerate(images, start=1), total=len(images), desc="  PP-Structure pages", unit="page"
+        enumerate(images, start=1),
+        total=len(images),
+        desc="  PP-Structure pages",
+        unit="page",
     ):
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             image.save(f.name)
@@ -261,7 +301,9 @@ def _run_ppstructure_on_images(
     return pages_blocks
 
 
-def _ppstructure_blocks_to_chunks(pages_blocks: list[tuple[int, list[dict]]]) -> list[dict]:
+def _ppstructure_blocks_to_chunks(
+    pages_blocks: list[tuple[int, list[dict]]],
+) -> list[dict]:
     chunks = []
     chunk_index = 0
     for page_num, blocks in pages_blocks:
@@ -269,14 +311,16 @@ def _ppstructure_blocks_to_chunks(pages_blocks: list[tuple[int, list[dict]]]) ->
             content = (block.get("content") or "").strip()
             if not content:
                 continue
-            chunks.append({
-                "content": content,
-                "page_number": page_num,
-                "chunk_index": chunk_index,
-                "chunk_type": block.get("type") or "text",
-                "bbox": block.get("bbox"),
-                "order_index": order,
-            })
+            chunks.append(
+                {
+                    "content": content,
+                    "page_number": page_num,
+                    "chunk_index": chunk_index,
+                    "chunk_type": block.get("type") or "text",
+                    "bbox": block.get("bbox"),
+                    "order_index": order,
+                }
+            )
             chunk_index += 1
     return chunks
 

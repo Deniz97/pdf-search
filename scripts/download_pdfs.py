@@ -14,6 +14,7 @@ Usage:
     uv run python scripts/download_pdfs.py
     # or: make download-pdfs
 """
+
 import sys
 import time
 from pathlib import Path
@@ -52,7 +53,10 @@ CONSENT_BUTTON_SELECTORS = [
     (By.CSS_SELECTOR, "button#L2AGLb"),  # "Accept all" (common)
     (By.CSS_SELECTOR, "button[id='W0wltc']"),  # Reject/other variant
 ]  # click first found to dismiss cookie dialog
-RESULT_CONTAINER_SELECTOR = (By.CSS_SELECTOR, "div.kCrYT")  # each result block (div.egMi0.kCrYT)
+RESULT_CONTAINER_SELECTOR = (
+    By.CSS_SELECTOR,
+    "div.kCrYT",
+)  # each result block (div.egMi0.kCrYT)
 RESULT_LINK_SELECTOR = (By.CSS_SELECTOR, "a[href*='url?q=']")  # Google redirect link
 RESULT_TITLE_SELECTOR = (By.CSS_SELECTOR, "h3")  # title within each result
 SELENIUM_WAIT_SECONDS = 15
@@ -129,7 +133,9 @@ EVENTS = [
 ]
 ASPECTS = ["Geopolitics", "Energy", "Finance", "Military", "Intelligence"]
 
-SEARCH_QUERIES = [f"{c} on {e} by {a}" for c in COUNTRIES for e in EVENTS for a in ASPECTS]
+SEARCH_QUERIES = [
+    f"{c} on {e} by {a}" for c in COUNTRIES for e in EVENTS for a in ASPECTS
+]
 random.shuffle(SEARCH_QUERIES)
 
 
@@ -184,7 +190,9 @@ def dismiss_consent_if_present(driver: webdriver.Chrome) -> None:
             continue
 
 
-def search_with_selenium(driver: webdriver.Chrome, query: str, num_results: int = 20) -> list[dict]:
+def search_with_selenium(
+    driver: webdriver.Chrome, query: str, num_results: int = 20
+) -> list[dict]:
     """Use existing Chrome driver to search Google, return list of {url, title} dicts."""
     driver.get(GOOGLE_URL)
     time.sleep(1)
@@ -202,7 +210,9 @@ def search_with_selenium(driver: webdriver.Chrome, query: str, num_results: int 
         except Exception:
             continue
     if not search_box:
-        raise RuntimeError("Could not find Google search input (tried textarea and input[name='q'])")
+        raise RuntimeError(
+            "Could not find Google search input (tried textarea and input[name='q'])"
+        )
 
     search_box.clear()
     search_box.send_keys(query)
@@ -223,7 +233,13 @@ def search_with_selenium(driver: webdriver.Chrome, query: str, num_results: int 
             href = resolve_google_redirect_url(raw_href)
             if not href:
                 # Direct link (no redirect)
-                href = raw_href if raw_href and raw_href.startswith("http") and "google.com" not in raw_href else None
+                href = (
+                    raw_href
+                    if raw_href
+                    and raw_href.startswith("http")
+                    and "google.com" not in raw_href
+                    else None
+                )
             if not href:
                 continue
 
@@ -282,7 +298,9 @@ def download_pdf_with_progress(url: str, dest: Path, desc: str = "Downloading") 
         r.raise_for_status()
         total = int(r.headers.get("content-length", 0)) or None
         content = []
-        with tqdm(total=total, unit="B", unit_scale=True, desc=desc, leave=False) as pbar:
+        with tqdm(
+            total=total, unit="B", unit_scale=True, desc=desc, leave=False
+        ) as pbar:
             for chunk in r.iter_content(chunk_size=8192):
                 if chunk:
                     content.append(chunk)
@@ -317,7 +335,9 @@ def get_already_downloaded_urls(session: Session) -> set[str]:
     return {r.url for r in rows}
 
 
-def record_download(session: Session, url: str, search_query: str, local_path: str) -> None:
+def record_download(
+    session: Session, url: str, search_query: str, local_path: str
+) -> None:
     """Record a successful download in the database."""
     session.execute(
         text(
@@ -350,14 +370,16 @@ def main() -> None:
             search_query = ensure_filetype_pdf(query)
 
             # ---- 1. Search query ----
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print(f"QUERY: {search_query}")
-            print(f"{'='*60}")
+            print(f"{'=' * 60}")
 
             pdf_results: list[dict] = []  # {"url", "title"}
 
             try:
-                raw_results = search_with_selenium(driver, search_query, num_results=NUM_SEARCH_RESULTS)
+                raw_results = search_with_selenium(
+                    driver, search_query, num_results=NUM_SEARCH_RESULTS
+                )
                 raw_count = len(raw_results)
                 pdf_count = 0
                 dup_count = 0
@@ -380,7 +402,9 @@ def main() -> None:
                 continue
             time.sleep(100)
             # ---- 2. Result count ----
-            print(f"Raw results: {raw_count} | PDFs: {pdf_count} | Already seen: {dup_count}")
+            print(
+                f"Raw results: {raw_count} | PDFs: {pdf_count} | Already seen: {dup_count}"
+            )
             print(f"Result count: {len(pdf_results)} PDF(s)")
 
             if not pdf_results:
@@ -390,11 +414,13 @@ def main() -> None:
             top10 = pdf_results[:10]
             print(f"\nTop {len(top10)} results:")
             for i, r in enumerate(top10, 1):
-                title_short = (r["title"][:60] + "…") if len(r["title"]) > 60 else r["title"]
+                title_short = (
+                    (r["title"][:60] + "…") if len(r["title"]) > 60 else r["title"]
+                )
                 url_short = r["url"][:70] + "…" if len(r["url"]) > 70 else r["url"]
                 print(f"  {i:2}. {title_short}")
                 print(f"      {url_short}")
-                print(f"      pages: -")
+                print("      pages: -")
 
             # ---- 4. Selected for downloading ----
             print(f"\nAttempting downloads (target: {TARGET_COUNT}):")
@@ -450,7 +476,9 @@ def main() -> None:
                     print(f"     {url[:75]}…" if len(url) > 75 else f"     {url}")
                     print(f"     → {dest.name} ({pages} pages)")
 
-            print(f"\n--- Round complete (total collected: {len(collected)}/{TARGET_COUNT}) ---")
+            print(
+                f"\n--- Round complete (total collected: {len(collected)}/{TARGET_COUNT}) ---"
+            )
 
         print(f"\nDone. Downloaded {len(collected)} PDF(s) to {OUTPUT_DIR}")
     finally:
