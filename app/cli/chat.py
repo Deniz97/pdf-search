@@ -1,5 +1,6 @@
 """CLI chatbot with RAG tool calling."""
 
+import atexit
 import json
 import sys
 
@@ -16,6 +17,7 @@ GREEN = "\033[92m"
 RESET = "\033[0m"
 
 engine = create_engine(settings.database_url_sync)
+atexit.register(engine.dispose)
 client = OpenAI(api_key=settings.openai_api_key)
 
 TOOLS = [
@@ -190,11 +192,15 @@ def main():
         messages.append({"role": "user", "content": user_input})
 
         while True:
-            response = client.chat.completions.create(
-                model=settings.chat_model,
-                messages=messages,  # type: ignore[arg-type]
-                tools=TOOLS,  # type: ignore[arg-type]
-            )
+            try:
+                response = client.chat.completions.create(
+                    model=settings.chat_model,
+                    messages=messages,  # type: ignore[arg-type]
+                    tools=TOOLS,  # type: ignore[arg-type]
+                )
+            except KeyboardInterrupt:
+                print("\nInterrupted. Bye!")
+                return
 
             choice = response.choices[0]
             msg = choice.message

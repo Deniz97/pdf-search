@@ -4,9 +4,10 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.cli.utils import managed_sync_engine, setup_signal_handler
 from app.config import settings
 from app.services.ingest import ingest_pdf
 
@@ -60,6 +61,8 @@ def cmd_ingest(
     reingest: bool,
 ) -> None:
     """Ingest N or ALL PDFs. Reingest forces re-processing."""
+    shutdown_requested = setup_signal_handler()
+
     pdfs = collect_pdfs(root)
     if not pdfs:
         print(f"No PDF files found under '{root}'")
@@ -75,74 +78,74 @@ def cmd_ingest(
             "Reingest mode: will re-process all selected PDFs, including already finished.\n"
         )
 
-    engine = create_engine(settings.database_url_sync)
+    with managed_sync_engine() as engine:
+        with Session(engine) as session:
+            path_to_id = get_db_path_to_id(session) if not reingest else {}
+            path_to_created_at = get_db_path_to_created_at(session) if reingest else {}
 
-    with Session(engine) as session:
-        path_to_id = get_db_path_to_id(session) if not reingest else {}
-        path_to_created_at = get_db_path_to_created_at(session) if reingest else {}
+            # Build list to process
+            to_process: list[Path] = []
+            for p in pdfs:
+                path_str = str(p.resolve())
+                if reingest:
+                    to_process.append(p)
+                elif path_str not in path_to_id:
+                    to_process.append(p)
+                elif (
+                    session.execute(
+                        text("SELECT processed_status FROM documents WHERE id = :id"),
+                        {"id": path_to_id[path_str]},
+                    ).scalar_one()
+                    != "finished"
+                ):
+                    to_process.append(p)
 
-        # Build list to process
-        to_process: list[Path] = []
-        for p in pdfs:
-            path_str = str(p.resolve())
-            if reingest:
-                to_process.append(p)
-            elif path_str not in path_to_id:
-                to_process.append(p)
-            elif (
-                session.execute(
-                    text("SELECT processed_status FROM documents WHERE id = :id"),
-                    {"id": path_to_id[path_str]},
-                ).scalar_one()
-                != "finished"
-            ):
-                to_process.append(p)
+            # Reingest: sort by oldest ingested first (created_at ASC); new docs at end
+            if reingest and path_to_created_at:
+                to_process.sort(
+                    key=lambda p: path_to_created_at.get(str(p.resolve()), datetime.max)
+                )
 
-        # Reingest: sort by oldest ingested first (created_at ASC); new docs at end
-        if reingest and path_to_created_at:
-            to_process.sort(
-                key=lambda p: path_to_created_at.get(str(p.resolve()), datetime.max)
-            )
+            if count is not None:
+                to_process = to_process[:count]
 
-        if count is not None:
-            to_process = to_process[:count]
+            if not to_process:
+                print("Nothing to process.")
+                return
 
-        if not to_process:
-            print("Nothing to process.")
-            return
+            print(f"Processing {len(to_process)} document(s)...\n")
+            total_chunks = 0
+            for pdf_path in to_process:
+                if shutdown_requested[0]:
+                    break
+                try:
+                    total_chunks += ingest_pdf(session, pdf_path, reingest=reingest)
+                except Exception as e:
+                    print(f"  ERROR processing '{pdf_path}': {e}")
 
-        print(f"Processing {len(to_process)} document(s)...\n")
-        total_chunks = 0
-        for pdf_path in to_process:
-            try:
-                total_chunks += ingest_pdf(session, pdf_path, reingest=reingest)
-            except Exception as e:
-                print(f"  ERROR processing '{pdf_path}': {e}")
-
-    print(f"\nDone. Total chunks created/updated: {total_chunks}")
+            print(f"\nDone. Total chunks created/updated: {total_chunks}")
 
 
 def cmd_prune() -> None:
     """Remove DB records for documents whose files no longer exist on disk."""
-    engine = create_engine(settings.database_url_sync)
+    with managed_sync_engine() as engine:
+        with Session(engine) as session:
+            path_to_id = get_db_path_to_id(session)
+            deleted_count = 0
+            for path_str, doc_id in list(path_to_id.items()):
+                if not Path(path_str).exists():
+                    session.execute(
+                        text("DELETE FROM documents WHERE id = :id"),
+                        {"id": doc_id},
+                    )
+                    deleted_count += 1
+                    print(f"  Removed: {path_str}")
 
-    with Session(engine) as session:
-        path_to_id = get_db_path_to_id(session)
-        deleted_count = 0
-        for path_str, doc_id in list(path_to_id.items()):
-            if not Path(path_str).exists():
-                session.execute(
-                    text("DELETE FROM documents WHERE id = :id"),
-                    {"id": doc_id},
-                )
-                deleted_count += 1
-                print(f"  Removed: {path_str}")
-
-        if deleted_count:
-            session.commit()
-            print(f"\nPruned {deleted_count} document(s) with missing files.")
-        else:
-            print("Nothing to prune.")
+            if deleted_count:
+                session.commit()
+                print(f"\nPruned {deleted_count} document(s) with missing files.")
+            else:
+                print("Nothing to prune.")
 
 
 def main() -> None:

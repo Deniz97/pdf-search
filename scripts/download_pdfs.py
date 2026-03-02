@@ -40,6 +40,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 from tqdm import tqdm
 
+from app.cli.utils import setup_signal_handler
 from app.config import settings
 from pypdf import PdfReader
 
@@ -350,6 +351,8 @@ def record_download(
 
 
 def main() -> None:
+    shutdown_requested = setup_signal_handler()
+
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     engine = create_engine(settings.database_url_sync)
 
@@ -364,7 +367,7 @@ def main() -> None:
 
     try:
         for query in SEARCH_QUERIES:
-            if len(collected) >= TARGET_COUNT:
+            if shutdown_requested[0] or len(collected) >= TARGET_COUNT:
                 break
 
             search_query = ensure_filetype_pdf(query)
@@ -427,7 +430,7 @@ def main() -> None:
             selected: list[tuple[str, str, Path, int]] = []  # (url, title, dest, pages)
 
             for idx, r in enumerate(pdf_results, 1):
-                if len(collected) >= TARGET_COUNT:
+                if shutdown_requested[0] or len(collected) >= TARGET_COUNT:
                     break
 
                 url, title = r["url"], r["title"]
@@ -483,6 +486,7 @@ def main() -> None:
         print(f"\nDone. Downloaded {len(collected)} PDF(s) to {OUTPUT_DIR}")
     finally:
         driver.quit()
+        engine.dispose()
 
 
 if __name__ == "__main__":

@@ -5,6 +5,8 @@ __pycache__/
 uploads/
 cache/
 downloaded-pdfs/
+eval_results/
 .DS_Store
 .ruff_cache/
 dist
+*.egg-info/

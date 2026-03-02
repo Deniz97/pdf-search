@@ -3,8 +3,8 @@
 For each document, randomly samples chunks and uses an LLM to generate one search
 query per sampled chunk. Ensures equal number of questions per document.
 
-  make test-questions              Generate 10 questions per document (default)
-  make test-questions N=5          Generate 5 questions per document
+  make test-questions                              Generate 10 per doc (default)
+  make test-questions N_QUESTIONS=5                 Generate 5 per doc
 """
 
 import argparse
@@ -12,13 +12,14 @@ import json
 import random
 import sys
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
 
 from openai import OpenAI
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from tqdm import tqdm
 
+from app.cli.utils import managed_sync_engine, managed_thread_pool, setup_signal_handler
 from app.config import settings
 
 client = OpenAI(api_key=settings.openai_api_key)
@@ -199,10 +200,10 @@ def main() -> int:
         description="Generate test questions for search evaluation (equal per document)"
     )
     parser.add_argument(
-        "n",
-        nargs="?",
-        default=10,
+        "--questions-per-document",
         type=int,
+        default=10,
+        dest="questions_per_document",
         help="Number of questions to generate per document (default 10)",
     )
     parser.add_argument(
@@ -212,72 +213,78 @@ def main() -> int:
         help=f"Parallel workers for document-level processing (default: {DEFAULT_WORKERS})",
     )
     args = parser.parse_args()
-    per_doc = max(1, args.n)
+    per_doc = max(1, args.questions_per_document)
     workers = args.workers
 
-    engine = create_engine(settings.database_url_sync)
-    with Session(engine) as session:
-        docs = get_documents_with_chunks(session)
-        if not docs:
-            print("No documents with chunks found. Run ingest first.", file=sys.stderr)
-            return 1
+    shutdown_requested = setup_signal_handler()
 
-        # Build existing: doc_id -> (count of questions, set of chunk_ids with questions)
-        existing_rows = session.execute(
-            text(
-                "SELECT target_document_id, target_chunk_id FROM search_test_questions"
+    with managed_sync_engine() as engine:
+        with Session(engine) as session:
+            docs = get_documents_with_chunks(session)
+            if not docs:
+                print("No documents with chunks found. Run ingest first.", file=sys.stderr)
+                return 1
+
+            # Build existing: doc_id -> (count of questions, set of chunk_ids with questions)
+            existing_rows = session.execute(
+                text(
+                    "SELECT target_document_id, target_chunk_id FROM search_test_questions"
+                )
+            ).fetchall()
+            existing_count_by_doc: dict[str, int] = {}
+            existing_chunks_by_doc: dict[str, set[str]] = {}
+            for r in existing_rows:
+                did = str(r.target_document_id)
+                cid = str(r.target_chunk_id)
+                existing_count_by_doc[did] = existing_count_by_doc.get(did, 0) + 1
+                if did not in existing_chunks_by_doc:
+                    existing_chunks_by_doc[did] = set()
+                existing_chunks_by_doc[did].add(cid)
+
+        # Build list of (doc, existing_count, existing_chunk_ids) for docs that need work
+        to_process: list[tuple[dict, int, set[str]]] = []
+        for doc in docs:
+            doc_id = str(doc["document_id"])
+            existing_count = existing_count_by_doc.get(doc_id, 0)
+            existing_chunks = existing_chunks_by_doc.get(doc_id, set())
+            if per_doc - existing_count <= 0:
+                continue
+            available = [c for c in doc["chunks"] if str(c["chunk_id"]) not in existing_chunks]
+            if not available:
+                continue
+            to_process.append((doc, existing_count, existing_chunks))
+
+        if not to_process:
+            print(
+                f"No documents need questions (target {per_doc} per doc, {len(docs)} documents)."
             )
-        ).fetchall()
-        existing_count_by_doc: dict[str, int] = {}
-        existing_chunks_by_doc: dict[str, set[str]] = {}
-        for r in existing_rows:
-            did = str(r.target_document_id)
-            cid = str(r.target_chunk_id)
-            existing_count_by_doc[did] = existing_count_by_doc.get(did, 0) + 1
-            if did not in existing_chunks_by_doc:
-                existing_chunks_by_doc[did] = set()
-            existing_chunks_by_doc[did].add(cid)
+            return 0
 
-    # Build list of (doc, existing_count, existing_chunk_ids) for docs that need work
-    to_process: list[tuple[dict, int, set[str]]] = []
-    for doc in docs:
-        doc_id = str(doc["document_id"])
-        existing_count = existing_count_by_doc.get(doc_id, 0)
-        existing_chunks = existing_chunks_by_doc.get(doc_id, set())
-        if per_doc - existing_count <= 0:
-            continue
-        available = [c for c in doc["chunks"] if str(c["chunk_id"]) not in existing_chunks]
-        if not available:
-            continue
-        to_process.append((doc, existing_count, existing_chunks))
-
-    if not to_process:
-        print(
-            f"No documents need questions (target {per_doc} per doc, {len(docs)} documents)."
-        )
-        return 0
-
-    created = 0
-    if workers <= 1:
-        for doc, existing_count, existing_chunk_ids in tqdm(to_process, desc="Documents"):
-            created += _process_one_doc(
-                doc, per_doc, existing_count, existing_chunk_ids, engine
-            )
-    else:
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {
-                executor.submit(
-                    _process_one_doc,
-                    doc,
-                    per_doc,
-                    existing_count,
-                    existing_chunk_ids,
-                    engine,
-                ): doc
-                for doc, existing_count, existing_chunk_ids in to_process
-            }
-            for future in tqdm(as_completed(futures), total=len(futures), desc="Documents"):
-                created += future.result()
+        created = 0
+        if workers <= 1:
+            for doc, existing_count, existing_chunk_ids in tqdm(to_process, desc="Documents"):
+                if shutdown_requested[0]:
+                    break
+                created += _process_one_doc(
+                    doc, per_doc, existing_count, existing_chunk_ids, engine
+                )
+        else:
+            with managed_thread_pool(workers) as executor:
+                futures = {
+                    executor.submit(
+                        _process_one_doc,
+                        doc,
+                        per_doc,
+                        existing_count,
+                        existing_chunk_ids,
+                        engine,
+                    ): doc
+                    for doc, existing_count, existing_chunk_ids in to_process
+                }
+                for future in tqdm(as_completed(futures), total=len(futures), desc="Documents"):
+                    if shutdown_requested[0]:
+                        break
+                    created += future.result()
 
     print(
         f"Created {created} test questions ({per_doc} per document, {len(docs)} documents)."

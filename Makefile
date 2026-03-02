@@ -1,4 +1,4 @@
-.PHONY: build dev format typecheck db-up db-down db-reset migrate ingest reingest prune enrich reenrich chat test-questions search-eval download-pdfs
+.PHONY: build dev format typecheck db-up db-down db-reset migrate ingest reingest prune enrich reenrich chat search-eval download-pdfs kill-dev unlock-documents
 
 deps:
 	uv sync
@@ -8,6 +8,12 @@ build:
 
 dev:
 	uv run uvicorn app.main:app --reload
+
+kill-dev:
+	@-kill -9 $$(lsof -t -i :8000) 2>/dev/null; true
+
+unlock-documents:
+	uv run python scripts/unlock_documents.py
 
 format:
 	uv run ruff format .
@@ -30,6 +36,7 @@ db-reset:
 	$(MAKE) migrate
 
 migrate:
+	$(MAKE) unlock-documents
 	uv run python -c "import asyncio; from app.database import init_db; asyncio.run(init_db())"
 
 # Ingest targets: ROOT is an absolute path (default: $(CURDIR)/example-pdfs), N limits count (default: ALL)
@@ -58,13 +65,10 @@ chat:
 N_QUESTIONS ?= 10
 
 generate-questions:
-	uv run python -m app.cli.generate_test_questions $(N_QUESTIONS) --workers 4
-
-# Alias for generate-questions (PHONY lists test-questions)
-test-questions: generate-questions
+	uv run python -m app.cli.generate_test_questions --questions-per-document $(N_QUESTIONS) --workers 4
 
 search-eval:
-	uv run python -m app.cli.run_search_eval --documents 4 --questions-per-document 2 --workers 4
+	uv run python -m app.cli.run_search_eval --documents 25 --questions-per-document 4 --workers 4
 
 download-pdfs:
 	uv run python scripts/download_pdfs.py --limit

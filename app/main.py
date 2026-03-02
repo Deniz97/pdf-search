@@ -1,7 +1,15 @@
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request, HTTPException, Depends
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -17,7 +25,26 @@ from app.services.search import enhanced_search
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await init_db()
+    import sqlalchemy.exc
+
+    logging.getLogger("app.main").info("lifespan: starting init_db...")
+    try:
+        await asyncio.wait_for(init_db(), timeout=60)
+    except asyncio.TimeoutError as e:
+        logging.getLogger("app.main").error("lifespan: init_db timed out")
+        raise RuntimeError(
+            "Database initialization timed out after 60s. "
+            "Check DB connectivity and locks."
+        ) from e
+    except sqlalchemy.exc.DBAPIError as e:
+        if "lock timeout" in str(e.orig or e).lower():
+            raise RuntimeError(
+                "Database migration blocked: another connection holds a lock on "
+                "'documents'. Close other DB clients (uvicorn, search-eval, ingest, "
+                "etc.) and try again. Or run 'make migrate' when DB is idle."
+            ) from e
+        raise
+    logging.getLogger("app.main").info("lifespan: init_db complete, application ready")
     yield
 
 
