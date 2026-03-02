@@ -7,7 +7,7 @@ globs: "**/cli/chat.py"
 `app/cli/chat.py` is an interactive CLI chatbot that uses OpenAI tool calling to search the document database. It maintains conversation history and lets the LLM decide when and how to search. Uses raw vector search + Cohere rerank (no enhanced_search enrichment boosts).
 
 ## Architecture
-- Sync SQLAlchemy (`database_url_sync`) for DB queries
+- Sync SQLAlchemy (`sync_engine` from `app.database`) for DB queries
 - OpenAI Chat Completions API with `tools` parameter
 - Inner loop: keeps calling the LLM until it responds without tool calls
 

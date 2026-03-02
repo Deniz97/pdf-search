@@ -40,8 +40,8 @@ LLM assigns one type per question: `direct`, `paraphrase`, `keyword`, `conceptua
 - LLM returns JSON: `{"queries": [{"text": "...", "type": "..."}]}` — take first valid query
 
 ### Eval run
-- Uses `async_session()` + `enhanced_search` (async) — same as API
-- Sync Session for loading questions; `_persist_result()` inserts each result and commits immediately (with retries)
+- Uses `async_session()` + `enhanced_search` (async) for searches — same as API
+- Uses `sync_engine` from `app.database` for loading questions and persisting results; `_persist_result()` commits each result immediately (with retries)
 - On resume: load existing `question_id`s for run, filter rows to remaining only
 - Metrics computed from DB via `_load_results_from_db_simple()` — not in-memory aggregation
 
@@ -63,5 +63,5 @@ for i, cid in enumerate(chunk_order):
 - **Don't use plain vector search** — use `enhanced_search` to match live UI (query expansion + enrichment boosts + rerank)
 - **Don't change SEARCH_TOP_K** — must match live UI (10) for comparable metrics
 - **Don't run eval before generating questions** — `search_test_questions` must be populated first
-- **Don't use async engine in generate_test_questions** — sync Session with `database_url_sync`
+- **Don't use async engine in generate_test_questions** — use `sync_engine` from `app.database`
 - **Don't batch-insert all results at once** — persist each result immediately for crash resilience

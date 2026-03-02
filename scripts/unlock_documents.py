@@ -14,15 +14,14 @@ _root = Path(__file__).resolve().parent.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.config import settings
+from app.database import sync_engine
 
 
 def main() -> int:
-    engine = create_engine(settings.database_url_sync)
-    with Session(engine) as session:
+    with Session(sync_engine) as session:
         # Find ALL other backends connected to this database
         result = session.execute(
             text("""
@@ -44,7 +43,7 @@ def main() -> int:
     for pid, state, query_start, query_preview in rows:
         print(f"  PID {pid}: {state} - {query_preview or '(idle)'}...")
 
-    with Session(engine) as session:
+    with Session(sync_engine) as session:
         for pid, _, _, _ in rows:
             try:
                 session.execute(text("SELECT pg_terminate_backend(:pid)"), {"pid": pid})

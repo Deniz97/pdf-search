@@ -8,6 +8,7 @@ boosts that are added to the base cosine similarity before Cohere reranking.
 
 import json
 import re
+import time
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass
@@ -95,7 +96,7 @@ async def _has_enrichment_data(db: AsyncSession) -> bool:
 
 def _expand_query(query: str) -> dict:
     response = _client.chat.completions.create(
-        model=settings.chat_model,
+        model=settings.query_expansion_model,
         messages=[
             {"role": "system", "content": QUERY_EXPANSION_SYSTEM_PROMPT},
             {"role": "user", "content": f"Search query: {query}"},
@@ -277,7 +278,7 @@ async def enhanced_search(
     """Search chunks with enrichment-based boosting and Cohere reranking.
 
     Returns EnhancedSearchResponse with user_query, generated_cues, generated_regexes,
-    and results (DocumentResult per document).
+    results (DocumentResult per document), and timings (step name -> seconds).
     Falls back to basic vector+rerank when no enrichment data exists.
     """
     from app.schemas import (
@@ -292,7 +293,12 @@ async def enhanced_search(
         RegexResult,
     )
 
+    timings: dict[str, float] = {}
+
+    t0 = time.perf_counter()
     query_embedding = get_embedding(query)
+    timings["query_embedding"] = time.perf_counter() - t0
+
     fetch_limit = top_k * settings.rerank_top_n_multiplier
     generated_cues: list[dict] = []
     generated_regexes: list[dict] = []
@@ -300,6 +306,7 @@ async def enhanced_search(
     doc_desc_matched: set[str] = set()
     doc_tags_matched: dict[str, set[str]] = {}
 
+    t0 = time.perf_counter()
     # 1. Base vector search
     result = await db.execute(
         sa_text(
@@ -314,12 +321,16 @@ async def enhanced_search(
         {"emb": str(query_embedding), "lim": fetch_limit},
     )
     rows = result.fetchall()
+    timings["base_vector_search"] = time.perf_counter() - t0
+
     if not rows:
+        timings["total"] = sum(timings.values())
         return EnhancedSearchResponse(
             user_query=query,
             generated_cues=[],
             generated_regexes=[],
             results=[],
+            timings=timings,
         )
 
     candidates = [
@@ -336,16 +347,20 @@ async def enhanced_search(
         for row in rows
     ]
 
+    t0 = time.perf_counter()
     # 2. Check for enrichment data
     has_enrichment = await _has_enrichment_data(db)
+    timings["has_enrichment_check"] = time.perf_counter() - t0
 
     if has_enrichment:
+        t0 = time.perf_counter()
         # 3. Expand query into 8 signal types
         try:
             signals = _expand_query(query)
             generated_cues, generated_regexes = _signals_to_cues_and_regexes(signals)
         except Exception:
             signals = {}
+        timings["query_expansion"] = time.perf_counter() - t0
 
         # 4. Collect and embed all cue texts
         cue_texts: list[str] = []
@@ -362,7 +377,8 @@ async def enhanced_search(
         chunk_boosts: defaultdict[str, float] = defaultdict(float)
         doc_boosts: defaultdict[str, float] = defaultdict(float)
 
-        # 5. Embedding-cue boosts
+        t0 = time.perf_counter()
+        # 5. Embedding-cue boosts (includes cue embedding)
         if cue_texts:
             cue_embeddings = get_embeddings(cue_texts)
             for sig_type, relevance, idx in cue_meta:
@@ -386,7 +402,9 @@ async def enhanced_search(
                     await _doc_cue_boosts(
                         db, emb, "tags_embedding", relevance, doc_boosts
                     )
+        timings["embedding_cue_boosts"] = time.perf_counter() - t0
 
+        t0 = time.perf_counter()
         # 6. Regex boosts
         for sig_type in (
             "context_regex",
@@ -413,19 +431,30 @@ async def enhanced_search(
                     await _doc_tag_regex_boosts(
                         db, pat, relevance, doc_boosts, doc_tags_matched
                     )
+        timings["regex_boosts"] = time.perf_counter() - t0
 
+        t0 = time.perf_counter()
         # 7. Apply boosts to candidate scores
         for c in candidates:
             boost = chunk_boosts.get(str(c["chunk_id"]), 0.0) + doc_boosts.get(
                 str(c["document_id"]), 0.0
             )
             c["score"] = round(c["score"] + boost, 4)
+        timings["apply_boosts"] = time.perf_counter() - t0
+    else:
+        timings["query_expansion"] = 0.0
+        timings["embedding_cue_boosts"] = 0.0
+        timings["regex_boosts"] = 0.0
+        timings["apply_boosts"] = 0.0
 
+    t0 = time.perf_counter()
     # 8. Sort and rerank (either with or without boosts)
     candidates.sort(key=lambda x: x["score"], reverse=True)
     pool = candidates[:fetch_limit]
     reranked = rerank(query, pool, top_n=top_k)
+    timings["rerank"] = time.perf_counter() - t0
 
+    t0 = time.perf_counter()
     # 9. Group by document and build DocumentResult
 
     doc_to_chunks: dict[uuid.UUID, list[dict]] = {}
@@ -436,6 +465,8 @@ async def enhanced_search(
         doc_to_chunks[doc_id].append(item)
 
     if not doc_to_chunks:
+        timings["build_results"] = time.perf_counter() - t0
+        timings["total"] = sum(timings.values())
         return EnhancedSearchResponse(
             user_query=query,
             generated_cues=[CueResult(**c) for c in generated_cues],
@@ -443,6 +474,7 @@ async def enhanced_search(
             results=[],
             chunk_rank_order=[],
             document_rank_order=[],
+            timings=timings,
         )
 
     chunk_rank_order = [item["chunk_id"] for item in reranked]
@@ -535,6 +567,8 @@ async def enhanced_search(
             )
         )
 
+    timings["build_results"] = time.perf_counter() - t0
+    timings["total"] = sum(timings.values())
     return EnhancedSearchResponse(
         user_query=query,
         generated_cues=[CueResult(**c) for c in generated_cues],
@@ -542,6 +576,7 @@ async def enhanced_search(
         results=results,
         chunk_rank_order=chunk_rank_order,
         document_rank_order=document_rank_order,
+        timings=timings,
     )
 
 

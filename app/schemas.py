@@ -154,3 +154,4 @@ class EnhancedSearchResponse(BaseModel):
     document_rank_order: list[
         UUID
     ] = []  # doc IDs in order of first occurrence (for eval)
+    timings: dict[str, float] = {}  # step name -> seconds

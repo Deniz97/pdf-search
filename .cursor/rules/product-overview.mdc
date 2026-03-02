@@ -53,7 +53,7 @@ A PDF document search service. Users upload PDFs, the system extracts text via O
 app/
 ├── main.py            # FastAPI app, lifespan, template routes
 ├── config.py          # pydantic-settings
-├── database.py        # async SQLAlchemy engine, init_db
+├── database.py        # unified engines (async + sync), init_db, dispose_all
 ├── models.py          # Document, Chunk, DocumentEnrichment, Memory
 ├── schemas.py         # Pydantic request/response models
 ├── routes.py          # API endpoints (handles HTMX)

@@ -1,23 +1,20 @@
 """CLI chatbot with RAG tool calling."""
 
-import atexit
 import json
 import sys
 
 from openai import OpenAI
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.database import sync_engine
 from app.services.embeddings import get_embedding, rerank
 
 # ANSI color codes
 CYAN = "\033[96m"
 GREEN = "\033[92m"
 RESET = "\033[0m"
-
-engine = create_engine(settings.database_url_sync)
-atexit.register(engine.dispose)
 client = OpenAI(api_key=settings.openai_api_key)
 
 TOOLS = [
@@ -69,7 +66,7 @@ TOOLS = [
 
 
 def get_document_list() -> list[dict]:
-    with Session(engine) as session:
+    with Session(sync_engine) as session:
         rows = session.execute(
             text("SELECT filename, page_count FROM documents ORDER BY filename")
         ).fetchall()
@@ -79,7 +76,7 @@ def get_document_list() -> list[dict]:
 def do_search(query: str, top_k: int = 8) -> list[dict]:
     embedding = get_embedding(query)
     fetch_limit = top_k * settings.rerank_top_n_multiplier
-    with Session(engine) as session:
+    with Session(sync_engine) as session:
         rows = session.execute(
             text("""
                 SELECT c.content, c.page_number, c.chunk_index,
@@ -108,7 +105,7 @@ def do_search(query: str, top_k: int = 8) -> list[dict]:
 def do_search_in_book(book_name: str, query: str, top_k: int = 8) -> list[dict]:
     embedding = get_embedding(query)
     fetch_limit = top_k * settings.rerank_top_n_multiplier
-    with Session(engine) as session:
+    with Session(sync_engine) as session:
         rows = session.execute(
             text("""
                 SELECT c.content, c.page_number, c.chunk_index,

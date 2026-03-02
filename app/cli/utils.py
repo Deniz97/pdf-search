@@ -1,14 +1,9 @@
-"""Shared CLI utilities: signal handling, DB engine lifecycle, thread pools."""
+"""Shared CLI utilities: signal handling, thread pools."""
 
 from collections.abc import Generator
 from contextlib import contextmanager
 import signal
 from concurrent.futures import ThreadPoolExecutor
-
-from sqlalchemy import create_engine
-from sqlalchemy.engine import Engine
-
-from app.config import settings
 
 
 def setup_signal_handler(
@@ -26,16 +21,6 @@ def setup_signal_handler(
         signal.signal(signal.SIGBREAK, _on_sigint)
 
     return shutdown_requested
-
-
-@contextmanager
-def managed_sync_engine() -> Generator[Engine, None, None]:
-    """Context manager that yields a sync SQLAlchemy engine and disposes it on exit."""
-    engine = create_engine(settings.database_url_sync)
-    try:
-        yield engine
-    finally:
-        engine.dispose()
 
 
 @contextmanager

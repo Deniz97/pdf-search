@@ -20,8 +20,15 @@ alwaysApply: true
 - **PostgreSQL 16** via Docker (`pgvector/pgvector:pg16` image)
 - **pgvector** extension for vector similarity search
 - Host port **5433** (avoids default 5432 clashes)
-- **SQLAlchemy 2.0** with async engine (`asyncpg`) for the API, sync engine (`psycopg2`) for CLI scripts
+- **SQLAlchemy 2.0** with unified engines in `app/database.py`:
+  - `engine` + `async_session` — async (asyncpg) for FastAPI, run_search_eval
+  - `sync_engine` — sync (psycopg2) for CLI scripts, reprocess, migrate/unlock scripts
 - No migration framework — `init_db()` uses `Base.metadata.create_all`; schema changes via raw ALTER TABLE
+
+### DB access best practices
+- **Async (web, search eval):** `from app.database import async_session` → `async with async_session() as db:`
+- **Sync (CLI, scripts):** `from app.database import sync_engine` → `with Session(sync_engine) as session:`
+- **Never** create engines elsewhere — always import from `app.database`. Engines are shared; `dispose_all()` runs on process exit.
 
 ## AI / LLM
 - **OpenAI SDK** (`openai` package)

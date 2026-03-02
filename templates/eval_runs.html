@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+
+{% block title %}Search Eval Runs - PDF Search{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h1>Search Eval Runs</h1>
+    <p class="page-description">
+        Browse search evaluation runs. Each run tests questions through <code>enhanced_search</code>
+        and records chunk/document ranks. Click a run to see all test cases and their results.
+    </p>
+
+    {% if runs %}
+    <div class="eval-runs-table-wrapper">
+        <table class="eval-runs-table">
+            <thead>
+                <tr>
+                    <th>Run</th>
+                    <th>Date</th>
+                    <th>top_k</th>
+                    <th>Questions</th>
+                    <th>Chunk hit@1</th>
+                    <th>Chunk hit@2</th>
+                    <th>Chunk hit@4</th>
+                    <th>Chunk hit@8</th>
+                    <th>Doc hit@1</th>
+                    <th>Doc hit@2</th>
+                    <th>Doc hit@4</th>
+                    <th>Doc hit@8</th>
+                    <th>Notes</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for run in runs %}
+                {% set m = run_metrics.get(run.id|string) or {} %}
+                {% set n = m.get('n', 0) %}
+                <tr>
+                    <td>
+                        <a href="/search-eval-runs/{{ run.id }}" class="run-link">{{ run.id|string|truncate(12, True, '') }}</a>
+                    </td>
+                    <td>{{ run.run_at.strftime('%Y-%m-%d %H:%M') if run.run_at else 'N/A' }}</td>
+                    <td>{{ run.top_k }}</td>
+                    <td>{{ n }}</td>
+                    <td>{{ ((100 * m.get('chunk_h1', 0) / n)|round(1)) if n else 0 }}%</td>
+                    <td>{{ ((100 * m.get('chunk_h2', 0) / n)|round(1)) if n else 0 }}%</td>
+                    <td>{{ ((100 * m.get('chunk_h4', 0) / n)|round(1)) if n else 0 }}%</td>
+                    <td>{{ ((100 * m.get('chunk_h8', 0) / n)|round(1)) if n else 0 }}%</td>
+                    <td>{{ ((100 * m.get('doc_h1', 0) / n)|round(1)) if n else 0 }}%</td>
+                    <td>{{ ((100 * m.get('doc_h2', 0) / n)|round(1)) if n else 0 }}%</td>
+                    <td>{{ ((100 * m.get('doc_h4', 0) / n)|round(1)) if n else 0 }}%</td>
+                    <td>{{ ((100 * m.get('doc_h8', 0) / n)|round(1)) if n else 0 }}%</td>
+                    <td class="notes-cell">{{ run.notes or '—' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <h2>No eval runs yet</h2>
+        <p>Run search evaluation to create runs:</p>
+        <pre class="cmd-hint">make search-eval</pre>
+        <p class="empty-note">Requires test questions (<code>make generate-questions</code>) and ingested documents.</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

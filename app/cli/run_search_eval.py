@@ -26,12 +26,11 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.cli.utils import setup_signal_handler
-from app.config import settings
-from app.database import async_session
+from app.database import async_session, sync_engine
 from app.services.search import enhanced_search
 
 logging.basicConfig(
@@ -92,7 +91,9 @@ def _persist_result(
                         "target_chunk_id": str(result["target_chunk_id"]),
                         "target_document_id": str(result["target_doc_id"]),
                         "chunk_rank_order": json.dumps(result["chunk_rank_order"]),
-                        "document_rank_order": json.dumps(result["document_rank_order"]),
+                        "document_rank_order": json.dumps(
+                            result["document_rank_order"]
+                        ),
                     },
                 )
                 sync_session.commit()
@@ -160,6 +161,7 @@ async def _process_one_question(row: tuple, idx: int, total: int) -> dict:
         "doc_rank": doc_rank,
         "chunk_rank_order": chunk_rank_order,
         "document_rank_order": document_rank_order,
+        "timings": getattr(response, "timings", None) or {},
     }
 
 
@@ -210,7 +212,9 @@ def _load_results_from_db_simple(engine, run_id: str) -> list[dict]:
         q_texts: dict[str, str] = {}
         if question_ids:
             q_rows = sync_session.execute(
-                text("SELECT id::text, question FROM search_test_questions WHERE id::text = ANY(:ids)"),
+                text(
+                    "SELECT id::text, question FROM search_test_questions WHERE id::text = ANY(:ids)"
+                ),
                 {"ids": question_ids},
             ).fetchall()
             for qid, qtext in q_rows:
@@ -218,19 +222,30 @@ def _load_results_from_db_simple(engine, run_id: str) -> list[dict]:
 
     results = []
     for row in rows:
-        q_id, query_type, target_chunk_id, target_doc_id, chunk_rank, doc_rank, cro, dro = row
+        (
+            q_id,
+            query_type,
+            target_chunk_id,
+            target_doc_id,
+            chunk_rank,
+            doc_rank,
+            cro,
+            dro,
+        ) = row
         q_id_str = str(q_id)
-        results.append({
-            "question_id": q_id,
-            "question": q_texts.get(q_id_str, "(stored result)"),
-            "query_type": query_type or "unknown",
-            "target_chunk_id": str(target_chunk_id),
-            "target_doc_id": str(target_doc_id),
-            "chunk_rank": chunk_rank,
-            "doc_rank": doc_rank,
-            "chunk_rank_order": cro or [],
-            "document_rank_order": dro or [],
-        })
+        results.append(
+            {
+                "question_id": q_id,
+                "question": q_texts.get(q_id_str, "(stored result)"),
+                "query_type": query_type or "unknown",
+                "target_chunk_id": str(target_chunk_id),
+                "target_doc_id": str(target_doc_id),
+                "chunk_rank": chunk_rank,
+                "doc_rank": doc_rank,
+                "chunk_rank_order": cro or [],
+                "document_rank_order": dro or [],
+            }
+        )
     return results
 
 
@@ -246,104 +261,148 @@ async def run_eval(
     """Run evaluation and return summary metrics.
     Results are persisted after each question. Use resume_run_id to skip already-processed questions.
     """
-    engine = create_engine(settings.database_url_sync)
-    try:
-        with Session(engine) as sync_session:
-            log.info("Loading test questions...")
-            rows = sync_session.execute(
-                text("""
-                    SELECT id, question, query_type, target_chunk_id, target_document_id
-                    FROM search_test_questions
-                """)
-            ).fetchall()
+    with Session(sync_engine) as sync_session:
+        log.info("Loading test questions...")
+        rows = sync_session.execute(
+            text("""
+                SELECT id, question, query_type, target_chunk_id, target_document_id
+                FROM search_test_questions
+            """)
+        ).fetchall()
 
+        if not rows:
+            return {"error": "No test questions found. Run: make generate-questions"}
+
+        rows = _sample_rows(rows, documents, questions_per_document, limit)
+        if documents is not None or questions_per_document is not None:
+            doc_str = f"{documents} docs" if documents else "all docs"
+            qpd_str = (
+                f"{questions_per_document} q/doc"
+                if questions_per_document
+                else "all q/doc"
+            )
+            log.info("Sampled: %s × %s → %d questions", doc_str, qpd_str, len(rows))
+        elif limit:
+            log.info("Limited to %d questions (--limit)", len(rows))
+        else:
+            log.info("Loaded %d questions", len(rows))
+
+        # Create or resume run
+        if resume_run_id:
+            run_id = uuid.UUID(resume_run_id)
+            existing = sync_session.execute(
+                text("SELECT id FROM search_eval_runs WHERE id = :id"),
+                {"id": str(run_id)},
+            ).fetchone()
+            if not existing:
+                return {"error": f"Run ID {resume_run_id} not found. Cannot resume."}
+            done_ids = {
+                str(r[0])
+                for r in sync_session.execute(
+                    text(
+                        "SELECT question_id::text FROM search_eval_results WHERE run_id = :run_id"
+                    ),
+                    {"run_id": str(run_id)},
+                ).fetchall()
+            }
+            rows = [r for r in rows if str(r[0]) not in done_ids]
+            log.info(
+                "Resuming run %s: %d already done, %d remaining",
+                run_id,
+                len(done_ids),
+                len(rows),
+            )
             if not rows:
-                return {"error": "No test questions found. Run: make generate-questions"}
-
-            rows = _sample_rows(rows, documents, questions_per_document, limit)
-            if documents is not None or questions_per_document is not None:
-                doc_str = f"{documents} docs" if documents else "all docs"
-                qpd_str = f"{questions_per_document} q/doc" if questions_per_document else "all q/doc"
-                log.info("Sampled: %s × %s → %d questions", doc_str, qpd_str, len(rows))
-            elif limit:
-                log.info("Limited to %d questions (--limit)", len(rows))
-            else:
-                log.info("Loaded %d questions", len(rows))
-
-            # Create or resume run
-            if resume_run_id:
-                run_id = uuid.UUID(resume_run_id)
-                existing = sync_session.execute(
-                    text("SELECT id FROM search_eval_runs WHERE id = :id"),
-                    {"id": str(run_id)},
-                ).fetchone()
-                if not existing:
-                    return {"error": f"Run ID {resume_run_id} not found. Cannot resume."}
-                done_ids = {
-                    str(r[0])
-                    for r in sync_session.execute(
-                        text("SELECT question_id::text FROM search_eval_results WHERE run_id = :run_id"),
-                        {"run_id": str(run_id)},
-                    ).fetchall()
-                }
-                rows = [r for r in rows if str(r[0]) not in done_ids]
-                log.info("Resuming run %s: %d already done, %d remaining", run_id, len(done_ids), len(rows))
-                if not rows:
-                    log.info("All questions already processed. Computing metrics from DB...")
-                    full_results = _load_results_from_db_simple(engine, str(run_id))
-                    return _compute_and_write_output(
-                        engine, run_id, full_results, workers, notes,
-                        limit, documents, questions_per_document,
-                    )
-            else:
-                run_id = uuid.uuid4()
-                sync_session.execute(
-                    text("""
-                        INSERT INTO search_eval_runs (id, top_k, notes)
-                        VALUES (:id, :top_k, :notes)
-                    """),
-                    {"id": str(run_id), "top_k": SEARCH_TOP_K, "notes": notes},
+                log.info(
+                    "All questions already processed. Computing metrics from DB..."
                 )
-                sync_session.commit()
+                full_results = _load_results_from_db_simple(sync_engine, str(run_id))
+                return _compute_and_write_output(
+                    sync_engine,
+                    run_id,
+                    full_results,
+                    workers,
+                    notes,
+                    limit,
+                    documents,
+                    questions_per_document,
+                    timing_samples=[],
+                )
+        else:
+            run_id = uuid.uuid4()
+            sync_session.execute(
+                text("""
+                    INSERT INTO search_eval_runs (id, top_k, notes)
+                    VALUES (:id, :top_k, :notes)
+                """),
+                {"id": str(run_id), "top_k": SEARCH_TOP_K, "notes": notes},
+            )
+            sync_session.commit()
 
-        log.info("Run ID: %s | top_k: %d | workers: %d", run_id, SEARCH_TOP_K, workers)
-        log.info("Running searches (persisting each result immediately)...")
-        shutdown = shutdown_requested or [False]
-        total = len(rows)
-        start_idx_offset = total  # for display; we don't track "already done" in progress
-        start_time = time.perf_counter()
-        processed = 0
+    log.info("Run ID: %s | top_k: %d | workers: %d", run_id, SEARCH_TOP_K, workers)
+    log.info("Running searches (persisting each result immediately)...")
+    shutdown = shutdown_requested or [False]
+    total = len(rows)
+    start_time = time.perf_counter()
+    processed = 0
+    timing_samples: list[dict[str, float]] = []
 
-        for batch in _chunks(rows, workers):
-            if shutdown[0]:
-                break
-            start_idx = processed + 1
-            batch_tasks = [
-                _process_one_question(row, start_idx + i, total)
-                for i, row in enumerate(batch)
-            ]
-            batch_results = await asyncio.gather(*batch_tasks)
-
-            for r in batch_results:
-                _persist_result(engine, str(run_id), r)
-                processed += 1
-
-        total_elapsed = time.perf_counter() - start_time
+    for batch in _chunks(rows, workers):
         if shutdown[0]:
-            log.info("Interrupted. %d results persisted.", processed)
-        log.info(
-            "Searches complete in %.1fs (%.1f q/s)",
-            total_elapsed,
-            processed / total_elapsed if total_elapsed > 0 else 0,
-        )
-        log.info("Loading results from DB for metrics...")
-        full_results = _load_results_from_db_simple(engine, str(run_id))
-        return _compute_and_write_output(
-            engine, run_id, full_results, workers, notes,
-            limit, documents, questions_per_document,
-        )
-    finally:
-        engine.dispose()
+            break
+        start_idx = processed + 1
+        batch_tasks = [
+            _process_one_question(row, start_idx + i, total)
+            for i, row in enumerate(batch)
+        ]
+        batch_results = await asyncio.gather(*batch_tasks)
+
+        for r in batch_results:
+            _persist_result(sync_engine, str(run_id), r)
+            if r.get("timings"):
+                timing_samples.append(r["timings"])
+            processed += 1
+
+    total_elapsed = time.perf_counter() - start_time
+    if shutdown[0]:
+        log.info("Interrupted. %d results persisted.", processed)
+    log.info(
+        "Searches complete in %.1fs (%.1f q/s)",
+        total_elapsed,
+        processed / total_elapsed if total_elapsed > 0 else 0,
+    )
+    log.info("Loading results from DB for metrics...")
+    full_results = _load_results_from_db_simple(sync_engine, str(run_id))
+    return _compute_and_write_output(
+        sync_engine,
+        run_id,
+        full_results,
+        workers,
+        notes,
+        limit,
+        documents,
+        questions_per_document,
+        timing_samples=timing_samples,
+    )
+
+
+def _compute_average_timings(
+    timing_samples: list[dict[str, float]],
+) -> dict[str, float]:
+    """Compute average duration (seconds) per step across samples."""
+    if not timing_samples:
+        return {}
+    all_keys = set()
+    for t in timing_samples:
+        all_keys.update(k for k in t.keys() if k != "total")
+    avg: dict[str, float] = {}
+    for k in sorted(all_keys):
+        vals = [t[k] for t in timing_samples if k in t and isinstance(t[k], (int, float))]
+        if vals:
+            avg[k] = sum(vals) / len(vals)
+    if avg:
+        avg["total"] = sum(v for k, v in avg.items() if k != "total")
+    return avg
 
 
 def _compute_and_write_output(
@@ -355,11 +414,14 @@ def _compute_and_write_output(
     limit: int | None,
     documents: int | None,
     questions_per_document: int | None,
+    timing_samples: list[dict[str, float]] | None = None,
 ) -> dict:
     """Compute metrics from full_results and write eval output files."""
     n = len(full_results)
     if n == 0:
         return {"error": "No results to compute metrics."}
+
+    avg_timings = _compute_average_timings(timing_samples or [])
 
     chunk_hits = {k: 0 for k in K_VALUES}
     doc_hits = {k: 0 for k in K_VALUES}
@@ -393,14 +455,10 @@ def _compute_and_write_output(
     for k in K_VALUES:
         chunk_metrics[f"hit@{k}"] = chunk_hits[k]
         chunk_metrics[f"recall@{k}"] = chunk_hits[k] / n if n else 0
-        chunk_metrics[f"precision@{k}"] = (
-            chunk_hits[k] / (k * n) if n and k else 0.0
-        )
+        chunk_metrics[f"precision@{k}"] = chunk_hits[k] / (k * n) if n and k else 0.0
         doc_metrics[f"hit@{k}"] = doc_hits[k]
         doc_metrics[f"recall@{k}"] = doc_hits[k] / n if n else 0
-        doc_metrics[f"precision@{k}"] = (
-            doc_hits[k] / (k * n) if n and k else 0.0
-        )
+        doc_metrics[f"precision@{k}"] = doc_hits[k] / (k * n) if n and k else 0.0
 
     by_doc: dict[str, dict] = defaultdict(
         lambda: {
@@ -425,7 +483,9 @@ def _compute_and_write_output(
 
     with Session(engine) as sync_session:
         n_docs, n_chunks = sync_session.execute(
-            text("SELECT (SELECT COUNT(*) FROM documents), (SELECT COUNT(*) FROM chunks)")
+            text(
+                "SELECT (SELECT COUNT(*) FROM documents), (SELECT COUNT(*) FROM chunks)"
+            )
         ).fetchone()
 
     config_lines = [
@@ -496,37 +556,60 @@ def _compute_and_write_output(
         "",
         f"Run ID: `{run_id}` | Questions: {n} | top_k: {SEARCH_TOP_K}",
         "",
-        "## Overall Metrics",
-        "",
-        "### Chunk-level",
-        "",
-        "| k | hit@k | recall@k | precision@k |",
-        "|---|-------|----------|--------------|",
     ]
+
+    if avg_timings:
+        res_lines.extend(
+            [
+                "## Average Step Timings (seconds)",
+                "",
+                "| Step | Avg (s) | Avg (ms) |",
+                "|------|---------|----------|",
+            ]
+        )
+        for k in sorted(avg_timings.keys(), key=lambda x: (0 if x == "total" else 1, x)):
+            v = avg_timings[k]
+            res_lines.append(f"| {k} | {v:.3f} | {v * 1000:.0f} |")
+        res_lines.extend(["", ""])
+
+    res_lines.extend(
+        [
+            "## Overall Metrics",
+            "",
+            "### Chunk-level",
+            "",
+            "| k | hit@k | recall@k | precision@k |",
+            "|---|-------|----------|--------------|",
+        ]
+    )
     for k in K_VALUES:
         c = chunk_metrics
         res_lines.append(
             f"| {k} | {c[f'hit@{k}']} | {c[f'recall@{k}']:.1%} | {c[f'precision@{k}']:.1%} |"
         )
-    res_lines.extend([
-        "",
-        "### Document-level",
-        "",
-        "| k | hit@k | recall@k | precision@k |",
-        "|---|-------|----------|--------------|",
-    ])
+    res_lines.extend(
+        [
+            "",
+            "### Document-level",
+            "",
+            "| k | hit@k | recall@k | precision@k |",
+            "|---|-------|----------|--------------|",
+        ]
+    )
     for k in K_VALUES:
         d = doc_metrics
         res_lines.append(
             f"| {k} | {d[f'hit@{k}']} | {d[f'recall@{k}']:.1%} | {d[f'precision@{k}']:.1%} |"
         )
-    res_lines.extend([
-        "",
-        "## Per-Document Metrics",
-        "",
-        "| Document | filename | n | chunk hit@1 | chunk hit@2 | chunk hit@4 | chunk hit@8 | doc hit@1 | doc hit@2 | doc hit@4 | doc hit@8 |",
-        "|----------|----------|---|-------------|-------------|-------------|-------------|-----------|-----------|-----------|-----------|",
-    ])
+    res_lines.extend(
+        [
+            "",
+            "## Per-Document Metrics",
+            "",
+            "| Document | filename | n | chunk hit@1 | chunk hit@2 | chunk hit@4 | chunk hit@8 | doc hit@1 | doc hit@2 | doc hit@4 | doc hit@8 |",
+            "|----------|----------|---|-------------|-------------|-------------|-------------|-----------|-----------|-----------|-----------|",
+        ]
+    )
     for doc_id in sorted(by_doc.keys()):
         bd = by_doc[doc_id]
         fn = doc_id_to_filename.get(doc_id, "—").replace("|", " ")
@@ -562,6 +645,7 @@ def _compute_and_write_output(
         "document": doc_metrics,
         "by_query_type": by_type,
         "output_dir": str(out_dir),
+        "avg_timings": avg_timings,
     }
 
 
@@ -668,6 +752,15 @@ def main() -> int:
                 else ["n=0"]
             )
             print(f"  {qtype}: n={n_q}  {'  '.join(parts)}")
+
+    if result.get("avg_timings"):
+        print("\n--- Average step timings (ms) ---")
+        for k in sorted(
+            result["avg_timings"].keys(),
+            key=lambda x: (0 if x == "total" else 1, x),
+        ):
+            v = result["avg_timings"][k]
+            print(f"  {k}: {v * 1000:.0f}")
 
     print()
     return 0

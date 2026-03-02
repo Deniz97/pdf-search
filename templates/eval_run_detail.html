@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+
+{% block title %}Eval Run {{ run.id|string|truncate(8, True, '') }} - PDF Search{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="eval-run-header">
+        <a href="/search-eval-runs" class="back-link">← Back to Eval Runs</a>
+        <h1>Eval Run</h1>
+        <div class="eval-run-meta">
+            <span class="eval-meta-item"><strong>ID:</strong> <code>{{ run.id }}</code></span>
+            <span class="eval-meta-item"><strong>Date:</strong> {{ run.run_at.strftime('%Y-%m-%d %H:%M') if run.run_at else 'N/A' }}</span>
+            <span class="eval-meta-item"><strong>top_k:</strong> {{ run.top_k }}</span>
+            <span class="eval-meta-item"><strong>Questions:</strong> {{ metrics.n }}</span>
+            {% if run.notes %}
+            <span class="eval-meta-item eval-notes"><strong>Notes:</strong> {{ run.notes }}</span>
+            {% endif %}
+        </div>
+        <div class="eval-metrics-summary">
+            <div class="metrics-block">
+                <h3>Chunk-level</h3>
+                <div class="metrics-row">
+                    {% set pct = (100 * metrics.chunk_h1 / metrics.n)|round(1) if metrics.n else 0 %}
+                    <span class="metric">hit@1: {{ metrics.chunk_h1 }} ({{ pct }}%)</span>
+                    {% set pct = (100 * metrics.chunk_h2 / metrics.n)|round(1) if metrics.n else 0 %}
+                    <span class="metric">hit@2: {{ metrics.chunk_h2 }} ({{ pct }}%)</span>
+                    {% set pct = (100 * metrics.chunk_h4 / metrics.n)|round(1) if metrics.n else 0 %}
+                    <span class="metric">hit@4: {{ metrics.chunk_h4 }} ({{ pct }}%)</span>
+                    {% set pct = (100 * metrics.chunk_h8 / metrics.n)|round(1) if metrics.n else 0 %}
+                    <span class="metric">hit@8: {{ metrics.chunk_h8 }} ({{ pct }}%)</span>
+                </div>
+            </div>
+            <div class="metrics-block">
+                <h3>Document-level</h3>
+                <div class="metrics-row">
+                    {% set pct = (100 * metrics.doc_h1 / metrics.n)|round(1) if metrics.n else 0 %}
+                    <span class="metric">hit@1: {{ metrics.doc_h1 }} ({{ pct }}%)</span>
+                    {% set pct = (100 * metrics.doc_h2 / metrics.n)|round(1) if metrics.n else 0 %}
+                    <span class="metric">hit@2: {{ metrics.doc_h2 }} ({{ pct }}%)</span>
+                    {% set pct = (100 * metrics.doc_h4 / metrics.n)|round(1) if metrics.n else 0 %}
+                    <span class="metric">hit@4: {{ metrics.doc_h4 }} ({{ pct }}%)</span>
+                    {% set pct = (100 * metrics.doc_h8 / metrics.n)|round(1) if metrics.n else 0 %}
+                    <span class="metric">hit@8: {{ metrics.doc_h8 }} ({{ pct }}%)</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="eval-results-section">
+        <h2>Test Cases ({{ results|length }})</h2>
+        <div class="eval-result-cards">
+            {% for r in results %}
+            <div class="eval-result-card {{ 'eval-hit' if r.chunk_rank else 'eval-miss' }}">
+                <div class="eval-card-header">
+                    <h3 class="eval-question">{{ r.question }}</h3>
+                    <span class="query-type-badge query-type-{{ r.query_type | replace('-', '_') }}">{{ r.query_type }}</span>
+                </div>
+                <div class="eval-card-outcome">
+                    {% if r.chunk_rank %}
+                    <span class="outcome-badge outcome-hit">Chunk rank #{{ r.chunk_rank }} ✓</span>
+                    {% else %}
+                    <span class="outcome-badge outcome-miss">Chunk missed</span>
+                    {% endif %}
+                    {% if r.doc_rank %}
+                    <span class="outcome-badge outcome-hit">Doc rank #{{ r.doc_rank }} ✓</span>
+                    {% else %}
+                    <span class="outcome-badge outcome-miss">Doc missed</span>
+                    {% endif %}
+                </div>
+                <div class="eval-card-target">
+                    <strong>Target:</strong>
+                    <a href="/documents/{{ r.target_document_id }}" class="doc-link">{{ r.target_doc_name }}</a>
+                    {% if r.target_chunk_page %}
+                    <span class="chunk-meta-info"> (page {{ r.target_chunk_page }})</span>
+                    {% endif %}
+                    <div class="target-chunk-preview">{{ r.target_chunk_preview[:300] }}{% if r.target_chunk_preview|length > 300 %}…{% endif %}</div>
+                </div>
+                <div class="eval-card-ranks">
+                    <div class="rank-section">
+                        <strong>Document rank order:</strong>
+                        <div class="rank-pills">
+                            {% for item in r.doc_rank_items %}
+                            <span class="rank-pill {{ 'rank-pill-target' if item.is_target else '' }}">{{ item.rank }}. {{ item.doc_name }}{% if item.is_target %} ✓{% endif %}</span>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    <div class="rank-section">
+                        <strong>Chunk rank order:</strong>
+                        <div class="rank-pills">
+                            {% for item in r.chunk_rank_items %}
+                            <span class="rank-pill {{ 'rank-pill-target' if item.is_target else '' }}">{{ item.rank }}. {{ item.doc_name }}{% if item.is_target %} ✓{% endif %}</span>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endblock %}

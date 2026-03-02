@@ -36,12 +36,12 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from tqdm import tqdm
 
 from app.cli.utils import setup_signal_handler
-from app.config import settings
+from app.database import sync_engine
 from pypdf import PdfReader
 
 # ---- Selenium selectors (adjust if Google's DOM changes) ----
@@ -354,9 +354,8 @@ def main() -> None:
     shutdown_requested = setup_signal_handler()
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    engine = create_engine(settings.database_url_sync)
 
-    with Session(engine) as session:
+    with Session(sync_engine) as session:
         seen_urls = get_already_downloaded_urls(session)
     print(f"Output directory: {OUTPUT_DIR}")
     print(f"Skipping {len(seen_urls)} already-downloaded URL(s)")
@@ -459,7 +458,7 @@ def main() -> None:
                     collected.append((url, dest))
                     selected.append((url, title, dest, pages))
                     seen_urls.add(url)
-                    with Session(engine) as session:
+                    with Session(sync_engine) as session:
                         record_download(
                             session,
                             url=url,
@@ -486,7 +485,6 @@ def main() -> None:
         print(f"\nDone. Downloaded {len(collected)} PDF(s) to {OUTPUT_DIR}")
     finally:
         driver.quit()
-        engine.dispose()
 
 
 if __name__ == "__main__":

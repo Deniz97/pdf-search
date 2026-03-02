@@ -64,12 +64,12 @@ except Exception as e:
     raise
 ```
 
-### Use sync SQLAlchemy for CLI scripts
-The ingest script uses `create_engine(settings.database_url_sync)` with `psycopg2`, not the async engine. Only the FastAPI API uses async.
+### Use sync engine for CLI scripts
+Import `sync_engine` from `app.database`. Use `with Session(sync_engine) as session:` for DB access.
 
 ## Anti-patterns
 - **Don't skip the cache check** — PP-Structure is expensive (seconds per page); always check before running
-- **Don't use the async engine in CLI scripts** — use `database_url_sync` with `Session`
+- **Don't use the async engine in CLI scripts** — use `sync_engine` with `Session` from `app.database`
 - **Don't hardcode batch sizes** — use the `batch_size` variable (currently 100 for embeddings)
 - **Don't commit before all chunks are inserted** — commit once after the full embedding loop
 - **Don't confuse upload with batch ingest** — upload uses no path/cache; batch ingest is path-based and uses cache

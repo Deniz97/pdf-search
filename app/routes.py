@@ -6,13 +6,13 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from starlette.templating import Jinja2Templates
 from pydantic import BaseModel
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 from openai import OpenAI
 
 from app.config import settings
-from app.database import get_db
+from app.database import get_db, sync_engine
 from app.models import Chunk, Document
 from app.services.embeddings import ask_llm, get_embedding, get_embeddings, rerank
 from app.services.ingest import ingest_pdf
@@ -478,10 +478,8 @@ async def reprocess_document(
         )
 
     # Run sync ingest_pdf in executor
-    engine = create_engine(settings.database_url_sync)
-
     def _reprocess():
-        with Session(engine) as session:
+        with Session(sync_engine) as session:
             return ingest_pdf(session, pdf_path, reingest=True, path_str=document.path)
 
     try:

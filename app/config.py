@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int = 1536
     chat_model: str = "gpt-4o-mini"
+    query_expansion_model: str = (
+        "gpt-3.5-turbo"  # faster for LLM query expansion (signals/cues)
+    )
     enrichment_model: str = (
         "gpt-3.5-turbo"  # faster/cheaper for STM + metadata (iterates over all chunks)
     )

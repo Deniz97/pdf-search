@@ -3,6 +3,19 @@
     <div class="results-header">
         Found {{ response.results|length }} document{{ 's' if response.results|length != 1 else '' }}
     </div>
+    {% if response.timings and response.timings|length > 0 %}
+    <div class="search-timings">
+        <strong>Timing (ms):</strong>
+        {% for step, sec in response.timings.items() %}
+        {% if step != "total" %}
+        <span class="timing-badge" title="{{ step }}">{{ step|replace('_', ' ') }}: {{ "%.0f"|format(sec * 1000) }}</span>
+        {% endif %}
+        {% endfor %}
+        {% if response.timings.get("total") is not none %}
+        <span class="timing-badge timing-total">total: {{ "%.0f"|format(response.timings.total * 1000) }}</span>
+        {% endif %}
+    </div>
+    {% endif %}
     {% if response.generated_cues or response.generated_regexes %}
     <div class="search-signals">
         {% if response.generated_cues %}

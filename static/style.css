@@ -248,6 +248,27 @@ body {
     border: 1px solid #e2e8f0;
 }
 
+.search-timings {
+    margin-bottom: 1rem;
+    padding: 0.5rem 1rem;
+    font-size: 0.8rem;
+    color: #64748b;
+}
+
+.search-timings .timing-badge {
+    display: inline-block;
+    margin: 0.2rem 0.4rem 0.2rem 0;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    background-color: #f1f5f9;
+    font-family: ui-monospace, monospace;
+}
+
+.search-timings .timing-total {
+    font-weight: 600;
+    background-color: #e2e8f0;
+}
+
 .signals-section {
     margin-bottom: 0.5rem;
 }
@@ -1334,6 +1355,250 @@ body {
     border-radius: 6px;
     font-size: 0.875rem;
     overflow-x: auto;
+}
+
+/* ----- Eval Runs ----- */
+.eval-runs-table-wrapper {
+    overflow-x: auto;
+    margin-top: 1.5rem;
+}
+
+.eval-runs-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.875rem;
+}
+
+.eval-runs-table th,
+.eval-runs-table td {
+    padding: 0.75rem 1rem;
+    text-align: left;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.eval-runs-table th {
+    background: #f9fafb;
+    font-weight: 600;
+    color: #374151;
+}
+
+.eval-runs-table tr:hover td {
+    background: #f9fafb;
+}
+
+.run-link {
+    color: #2563eb;
+    text-decoration: none;
+    font-family: ui-monospace, monospace;
+    font-weight: 500;
+}
+
+.run-link:hover {
+    text-decoration: underline;
+}
+
+.notes-cell {
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.eval-run-header {
+    margin-bottom: 2rem;
+}
+
+.eval-run-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.5rem;
+    margin: 1rem 0;
+    font-size: 0.875rem;
+    color: #4b5563;
+}
+
+.eval-meta-item {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.eval-meta-item code {
+    font-size: 0.8125rem;
+    background: #f3f4f6;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+}
+
+.eval-notes {
+    max-width: 100%;
+}
+
+.eval-metrics-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2rem;
+    margin-top: 1.5rem;
+    padding: 1.5rem;
+    background: #f9fafb;
+    border-radius: 8px;
+    border: 1px solid #e5e7eb;
+}
+
+.metrics-block h3 {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: #6b7280;
+    margin: 0 0 0.5rem 0;
+}
+
+.metrics-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+}
+
+.metric {
+    font-size: 0.875rem;
+    color: #374151;
+}
+
+.eval-results-section {
+    margin-top: 2rem;
+}
+
+.eval-results-section h2 {
+    font-size: 1.25rem;
+    font-weight: 600;
+    margin-bottom: 1.25rem;
+    color: #1f2937;
+}
+
+.eval-result-cards {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+}
+
+.eval-result-card {
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: 1.5rem;
+    transition: box-shadow 0.2s;
+}
+
+.eval-result-card:hover {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.eval-result-card.eval-hit {
+    border-left: 4px solid #22c55e;
+}
+
+.eval-result-card.eval-miss {
+    border-left: 4px solid #ef4444;
+}
+
+.eval-card-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.eval-question {
+    font-size: 1.0625rem;
+    font-weight: 600;
+    color: #1f2937;
+    margin: 0;
+    flex: 1;
+    line-height: 1.5;
+}
+
+.eval-card-outcome {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+
+.outcome-badge {
+    padding: 0.25rem 0.75rem;
+    border-radius: 6px;
+    font-size: 0.8125rem;
+    font-weight: 500;
+}
+
+.outcome-hit {
+    background: #d1fae5;
+    color: #065f46;
+}
+
+.outcome-miss {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.eval-card-target {
+    margin-bottom: 1rem;
+    font-size: 0.9rem;
+    color: #4b5563;
+}
+
+.target-chunk-preview {
+    margin-top: 0.5rem;
+    padding: 0.75rem;
+    background: #f9fafb;
+    border-left: 3px solid #93c5fd;
+    border-radius: 4px;
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    color: #374151;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+.eval-card-ranks {
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid #f3f4f6;
+}
+
+.rank-section {
+    margin-bottom: 0.75rem;
+}
+
+.rank-section:last-child {
+    margin-bottom: 0;
+}
+
+.rank-section strong {
+    display: block;
+    font-size: 0.75rem;
+    color: #6b7280;
+    margin-bottom: 0.35rem;
+}
+
+.rank-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+
+.rank-pill {
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    background: #f3f4f6;
+    color: #4b5563;
+}
+
+.rank-pill-target {
+    background: #d1fae5;
+    color: #065f46;
+    font-weight: 500;
 }
 
 .empty-note {
