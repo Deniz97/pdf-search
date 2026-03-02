@@ -36,13 +36,7 @@ async def lifespan(app: FastAPI):
             "Database initialization timed out after 60s. "
             "Check DB connectivity and locks."
         ) from e
-    except sqlalchemy.exc.DBAPIError as e:
-        if "lock timeout" in str(e.orig or e).lower():
-            raise RuntimeError(
-                "Database migration blocked: another connection holds a lock on "
-                "'documents'. Close other DB clients (uvicorn, search-eval, ingest, "
-                "etc.) and try again. Or run 'make migrate' when DB is idle."
-            ) from e
+    except sqlalchemy.exc.DBAPIError:
         raise
     logging.getLogger("app.main").info("lifespan: init_db complete, application ready")
     yield

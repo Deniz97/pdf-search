@@ -40,7 +40,7 @@ async def init_db():
     log.info("init_db: connecting...")
     async with engine.begin() as conn:
         log.info("init_db: connected, setting timeouts")
-        # Fail fast: 30s statement timeout, 10s lock timeout (avoid blocking on migrations)
+        # Fail fast: 30s statement timeout, 10s lock timeout
         await conn.execute(
             __import__("sqlalchemy").text("SET statement_timeout = '30000'")
         )
@@ -53,45 +53,4 @@ async def init_db():
         )
         log.info("init_db: create_all tables")
         await conn.run_sync(Base.metadata.create_all)
-        # Migration: add path column if missing (for existing DBs)
-        # Note: ADD COLUMN with UNIQUE needs exclusive lock; lock_timeout above fails fast if blocked
-        log.info("init_db: migration path column (add if not exists)")
-        await conn.execute(
-            __import__("sqlalchemy").text(
-                "ALTER TABLE documents ADD COLUMN IF NOT EXISTS path VARCHAR UNIQUE"
-            )
-        )
-        # Migration: add created_at if missing, set default, backfill NULLs
-        await conn.execute(
-            __import__("sqlalchemy").text(
-                "ALTER TABLE documents ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT now()"
-            )
-        )
-        await conn.execute(
-            __import__("sqlalchemy").text(
-                "ALTER TABLE documents ALTER COLUMN created_at SET DEFAULT now()"
-            )
-        )
-        await conn.execute(
-            __import__("sqlalchemy").text(
-                "UPDATE documents SET created_at = now() WHERE created_at IS NULL"
-            )
-        )
-        await conn.execute(
-            __import__("sqlalchemy").text(
-                "ALTER TABLE documents ALTER COLUMN created_at SET NOT NULL"
-            )
-        )
-        # Migration: add chunk_type and bbox for PP-Structure blocks
-        log.info("init_db: migration chunk_type, bbox")
-        await conn.execute(
-            __import__("sqlalchemy").text(
-                "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS chunk_type VARCHAR"
-            )
-        )
-        await conn.execute(
-            __import__("sqlalchemy").text(
-                "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS bbox JSONB"
-            )
-        )
     log.info("init_db: done")
