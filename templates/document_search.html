@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+
+{% block title %}{{ document.filename }} - Search Results{% endblock %}
+
+{% block content %}
+<div class="container">
+    <div class="document-header">
+        <a href="/" class="back-link">← Back to Search</a>
+        <h1>{{ document.filename }}</h1>
+        <div class="search-query-display">
+            <strong>Search Query:</strong> <span class="query-text">"{{ query }}"</span>
+        </div>
+        {% if document.enrichment %}
+        {% if document.enrichment.title %}
+        <div class="document-title-enriched">
+            <strong>Title:</strong> {{ document.enrichment.title }}
+        </div>
+        {% endif %}
+        {% if document.enrichment.description %}
+        <div class="document-description-full">
+            <strong>Description:</strong> {{ document.enrichment.description }}
+        </div>
+        {% endif %}
+        {% if document.enrichment.tags %}
+        <div class="document-tags-full">
+            <strong>Tags:</strong>
+            {% for tag in document.enrichment.tags %}
+            <span class="tag">{{ tag }}</span>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% endif %}
+        <div class="document-info">
+            <div class="info-item">
+                <strong>Status:</strong>
+                <span class="status-badge status-{{ document.processed_status }}">
+                    {{ document.processed_status }}
+                </span>
+            </div>
+            <div class="info-item">
+                <strong>Pages:</strong> {{ document.page_count }}
+            </div>
+            <div class="info-item">
+                <strong>Matching Chunks:</strong> {{ matching_chunk_ids|length }}
+            </div>
+        </div>
+    </div>
+
+    <div class="chunks-section" data-query="{{ query|e }}">
+        <h2>Chunks ({{ chunks|length }})</h2>
+        {% if chunks %}
+        <div class="chunks-list-search">
+            {% for chunk in chunks %}
+            {% set is_matching = chunk.id in matching_chunk_ids %}
+            {% set search_result = search_results_by_chunk_id.get(chunk.id) %}
+            <div class="chunk-item-search {% if is_matching %}chunk-matching{% endif %}" data-chunk-id="{{ chunk.id }}">
+                <div class="chunk-header-search">
+                    <div class="chunk-header-left">
+                        <span class="chunk-meta-search">
+                            Page {{ chunk.page_number or 'N/A' }} • Chunk {{ chunk.chunk_index }}
+                        </span>
+                        {% if is_matching and search_result %}
+                        <span class="chunk-score-badge">
+                            Score: {{ "%.4f"|format(search_result.score) }}
+                        </span>
+                        {% endif %}
+                    </div>
+                    <button class="chunk-toggle-btn" onclick="toggleChunk('{{ chunk.id }}')" aria-label="Toggle chunk">
+                        <span class="toggle-icon" id="icon-{{ chunk.id }}">▼</span>
+                    </button>
+                </div>
+                <div class="chunk-preview" id="preview-{{ chunk.id }}">
+                    {{ chunk.content[:150] }}{% if chunk.content|length > 150 %}...{% endif %}
+                </div>
+                <div class="chunk-content-full" id="content-{{ chunk.id }}" style="display: none;">
+                    <div class="chunk-content-text">
+                        {{ chunk.content }}
+                    </div>
+                    {% if memories_by_chunk.get(chunk.id) %}
+                    <div class="chunk-memories">
+                        <div class="memories-header">Memories:</div>
+                        {% for memory in memories_by_chunk[chunk.id] %}
+                        <div class="memory-item memory-{{ memory.type }}">
+                            <span class="memory-type">{{ memory.type }}:</span>
+                            <span class="memory-content">{{ memory.content }}</span>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <p>No chunks available for this document.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<script>
+function toggleChunk(chunkId) {
+    const content = document.getElementById('content-' + chunkId);
+    const preview = document.getElementById('preview-' + chunkId);
+    const icon = document.getElementById('icon-' + chunkId);
+    
+    if (content.style.display === 'none') {
+        content.style.display = 'block';
+        preview.style.display = 'none';
+        icon.textContent = '▲';
+    } else {
+        content.style.display = 'none';
+        preview.style.display = 'block';
+        icon.textContent = '▼';
+    }
+}
+
+// Highlight query terms in visible content
+document.addEventListener('DOMContentLoaded', function() {
+    const chunksSection = document.querySelector('.chunks-section');
+    const query = chunksSection ? chunksSection.getAttribute('data-query') || '' : '';
+    const queryTerms = query.toLowerCase().split(/\s+/).filter(t => t.length > 2);
+    
+    function highlightText(element, text) {
+        if (!text || queryTerms.length === 0) return;
+        
+        let html = element.innerHTML;
+        queryTerms.forEach(term => {
+            const regex = new RegExp(`(${term})`, 'gi');
+            html = html.replace(regex, '<mark class="match-highlight">$1</mark>');
+        });
+        element.innerHTML = html;
+    }
+    
+    // Highlight in all chunk contents
+    document.querySelectorAll('.chunk-content-text').forEach(el => {
+        highlightText(el, query);
+    });
+    
+    // Highlight in memory contents
+    document.querySelectorAll('.memory-content').forEach(el => {
+        highlightText(el, query);
+    });
+    
+    // Highlight in document description if it matches
+    const descEl = document.querySelector('.document-description-full');
+    if (descEl) {
+        highlightText(descEl, query);
+    }
+});
+</script>
+{% endblock %}

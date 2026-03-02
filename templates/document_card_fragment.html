@@ -1,0 +1,62 @@
+<div class="document-card-wrapper">
+    <a href="/documents/{{ document.id }}" class="document-card">
+        <div class="document-card-header">
+            <div class="document-statuses">
+                <span class="document-status status-{{ document.processed_status }}">
+                    {{ document.processed_status }}
+                </span>
+                <span class="document-status status-{{ document.enrichment.enrichment_status if document.enrichment else 'pending' }}">
+                    enrich: {{ document.enrichment.enrichment_status if document.enrichment else 'pending' }}
+                </span>
+            </div>
+            <h2 class="document-title">{{ document.filename }}</h2>
+        </div>
+        <div class="document-card-body">
+            {% if document.path %}
+            <div class="document-meta">
+                <span class="meta-item">
+                    <strong>Path:</strong> 
+                    <span class="path-text">{{ document.path }}</span>
+                </span>
+            </div>
+            {% endif %}
+            {% if document.enrichment and document.enrichment.description %}
+            <div class="document-description">
+                {{ document.enrichment.description }}
+            </div>
+            {% endif %}
+            {% if document.enrichment and document.enrichment.tags %}
+            <div class="document-tags">
+                {% for tag in document.enrichment.tags %}
+                <span class="tag">{{ tag }}</span>
+                {% endfor %}
+            </div>
+            {% endif %}
+            <div class="document-meta">
+                <span class="meta-item">
+                    <strong>Pages:</strong> {{ document.page_count }}
+                </span>
+                <span class="meta-item">
+                    <strong>Uploaded:</strong> 
+                    {% if document.created_at %}
+                        {{ document.created_at.strftime('%Y-%m-%d %H:%M') }}
+                    {% else %}
+                        N/A
+                    {% endif %}
+                </span>
+            </div>
+        </div>
+    </a>
+    {% if document.processed_status == 'errored' and document.path %}
+    <form 
+        method="post" 
+        action="/api/v1/documents/{{ document.id }}/reprocess"
+        hx-post="/api/v1/documents/{{ document.id }}/reprocess"
+        hx-target="closest .document-card-wrapper"
+        hx-swap="outerHTML"
+        class="reprocess-form"
+    >
+        <button type="submit" class="btn-reprocess">Reprocess</button>
+    </form>
+    {% endif %}
+</div>

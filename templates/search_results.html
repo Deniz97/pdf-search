@@ -1,25 +1,84 @@
-{% if results %}
+{% if response and response.results %}
 <div class="results-container">
     <div class="results-header">
-        Found {{ results|length }} result{{ 's' if results|length != 1 else '' }}
+        Found {{ response.results|length }} document{{ 's' if response.results|length != 1 else '' }}
     </div>
-    {% for result in results %}
-    <div class="result-item">
+    {% if response.generated_cues or response.generated_regexes %}
+    <div class="search-signals">
+        {% if response.generated_cues %}
+        <div class="signals-section">
+            <strong>Generated cues:</strong>
+            {% for cue in response.generated_cues %}
+            <span class="signal-badge cue-badge" title="score: {{ "%.2f"|format(cue.score) }}">{{ cue.text }}</span>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% if response.generated_regexes %}
+        <div class="signals-section">
+            <strong>Generated regexes:</strong>
+            {% for rx in response.generated_regexes %}
+            <code class="signal-badge regex-badge" title="score: {{ "%.2f"|format(rx.score) }}">{{ rx.text }}</code>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+    {% for doc_result in response.results %}
+    <a href="/search/result?q={{ query|urlencode }}&document_id={{ doc_result.document.id }}" class="result-item doc-result-item doc-result-link">
         <div class="result-header">
-            <div class="result-doc">
-                {{ result.document_filename or 'Unknown Document' }}
-            </div>
+            <div class="result-doc">{{ doc_result.document.filename }}</div>
             <div class="result-meta">
-                {% if result.page_number is not none %}
-                <span>Page {{ result.page_number + 1 }}</span>
-                {% endif %}
+                <span>{{ doc_result.matched_chunks|length }} matching chunk{{ 's' if doc_result.matched_chunks|length != 1 else '' }}</span>
+                {% if doc_result.matched_chunks %}
                 <span class="result-score">
-                    Score: {{ "%.4f"|format(result.score) }}
+                    Best score: {{ "%.4f"|format(doc_result.matched_chunks[0].score) }}
                 </span>
+                {% endif %}
+                {% if doc_result.description_matched %}
+                <span class="desc-matched-badge">description matched</span>
+                {% endif %}
+                {% if doc_result.matched_tags %}
+                <span class="tags-badge">{{ doc_result.matched_tags|join(", ") }}</span>
+                {% endif %}
             </div>
         </div>
-        <div class="result-content">{{ result.content }}</div>
-    </div>
+        <div class="result-matches">
+            {% for m in doc_result.matched_chunks %}
+            <div class="match-snippet">
+                <span class="match-meta">Page {{ m.page_number or 'N/A' }} · score {{ "%.3f"|format(m.score) }}</span>
+                <p class="match-content">{{ m.content[:300] }}{% if m.content|length > 300 %}…{% endif %}</p>
+            </div>
+            {% endfor %}
+        </div>
+        <div class="card-meta-section matched-memories">
+            <div class="card-meta-block">
+                <div class="card-meta-section-title">Matched contexts</div>
+                <div class="card-meta-pills">
+                    {% for ctx in (doc_result.matched_contexts or [])[:5] %}
+                    <span class="card-context-pill" title="{{ ctx.content }}">{{ ctx.content[:80] }}{% if ctx.content|length > 80 %}…{% endif %}</span>
+                    {% endfor %}
+                    {% if (doc_result.matched_contexts or [])|length > 5 %}
+                    <span class="card-meta-more">+{{ (doc_result.matched_contexts or [])|length - 5 }} more</span>
+                    {% elif not (doc_result.matched_contexts or []) %}
+                    <span class="card-meta-empty">None — run <code>make enrich</code> to extract</span>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="card-meta-block">
+                <div class="card-meta-section-title">Matched facts</div>
+                <div class="card-meta-pills">
+                    {% for fact in (doc_result.matched_facts or [])[:5] %}
+                    <span class="card-fact-pill" title="{{ fact.content }}">{{ fact.content[:80] }}{% if fact.content|length > 80 %}…{% endif %}</span>
+                    {% endfor %}
+                    {% if (doc_result.matched_facts or [])|length > 5 %}
+                    <span class="card-meta-more">+{{ (doc_result.matched_facts or [])|length - 5 }} more</span>
+                    {% elif not (doc_result.matched_facts or []) %}
+                    <span class="card-meta-empty">None — run <code>make enrich</code> to extract</span>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </a>
     {% endfor %}
 </div>
 {% else %}

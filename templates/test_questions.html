@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+
+{% block title %}Test Questions - PDF Search{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h1>Search Test Questions</h1>
+    <p class="page-description">
+        Generated test questions used to evaluate search quality. Each question has a known target chunk and document.
+        Generate via: <code>make generate-questions</code> or <code>make test-questions</code>
+    </p>
+
+    {% if questions %}
+    <div class="questions-stats">
+        <span class="stat-item">{{ questions|length }} question{{ questions|length != 1 and 's' or '' }}</span>
+    </div>
+
+    <div class="questions-list">
+        {% for q in questions %}
+        <div class="question-card">
+            <div class="question-header">
+                <h3 class="question-text">{{ q.question }}</h3>
+                <span class="query-type-badge query-type-{{ q.query_type | replace('-', '_') }}">{{ q.query_type }}</span>
+            </div>
+            <div class="question-meta">
+                <div class="meta-row">
+                    <strong>Target document:</strong>
+                    {% if q.target_document %}
+                    <a href="/documents/{{ q.target_document.id }}" class="doc-link">{{ q.target_document.filename }}</a>
+                    {% else %}
+                    <span class="meta-muted">(deleted)</span>
+                    {% endif %}
+                </div>
+                {% if q.target_chunk %}
+                <div class="meta-row chunk-preview">
+                    <strong>Target chunk:</strong>
+                    <span class="chunk-meta-info">Page {{ q.target_chunk.page_number or '?' }}, index {{ q.target_chunk.chunk_index }}</span>
+                    <div class="chunk-snippet">{{ q.target_chunk.content[:300] }}{% if q.target_chunk.content|length > 300 %}…{% endif %}</div>
+                </div>
+                {% endif %}
+                <div class="meta-row meta-muted">
+                    Created {{ q.created_at.strftime('%Y-%m-%d %H:%M') if q.created_at else 'N/A' }}
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <h2>No test questions yet</h2>
+        <p>Generate test questions for search evaluation with:</p>
+        <pre class="cmd-hint">make generate-questions</pre>
+        <p class="empty-note">Requires documents to be ingested and optionally enriched first.</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

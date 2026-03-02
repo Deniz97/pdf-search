@@ -14,7 +14,7 @@ alwaysApply: true
 - **HTMX** for dynamic interactions (loaded from CDN)
 - **StaticFiles** for CSS/assets
 - API prefix: `/api/v1`
-- Web UI routes: `/` (search), `/chat` (chat interface)
+- Web UI routes: `/` (search), `/chat`, `/documents`, `/documents/{id}`
 
 ## Database
 - **PostgreSQL 16** via Docker (`pgvector/pgvector:pg16` image)
@@ -27,7 +27,8 @@ alwaysApply: true
 - **OpenAI SDK** (`openai` package)
 - Embeddings: `text-embedding-3-small` (1536 dimensions)
 - Chat: `gpt-4o-mini` with function/tool calling
-- Tool calling used in CLI chatbot for RAG queries
+- Tool calling used in CLI chatbot and web chat for RAG queries
+- **Cohere** (`cohere` package) for reranking search results (`rerank-v3.5`)
 
 ## PDF Processing
 - **pdf2image** (requires system `poppler`) — converts PDF pages to images
@@ -47,7 +48,8 @@ alwaysApply: true
 
 ## Key Config
 - All settings via `pydantic-settings` (`app/config.py`), loaded from `.env`
-- `DATABASE_URL`, `DATABASE_URL_SYNC`, `OPENAI_API_KEY` are the critical env vars
+- `DATABASE_URL`, `DATABASE_URL_SYNC`, `OPENAI_API_KEY` — required
+- `COHERE_API_KEY` — required for reranking (search and chat)
 
 ## Make Targets
 | Command | Purpose |
@@ -57,6 +59,13 @@ alwaysApply: true
 | `make format` | ruff format + check --fix |
 | `make typecheck` | pyright |
 | `make db-up/down` | Docker Compose up/down |
+| `make db-reset` | Reset DB schema, then migrate |
 | `make migrate` | Create tables + pgvector extension |
-| `make ingest` | Ingest all PDFs from `example-pdfs/` |
+| `make ingest` | Ingest PDFs from `example-pdfs/` (ROOT=, N= optional) |
+| `make reingest` | Re-process documents (including finished) |
+| `make prune` | Remove DB records for documents whose files no longer exist |
+| `make enrich` | Enrich documents (memories, metadata) |
+| `make reenrich` | Re-enrich documents (including finished) |
 | `make chat` | Interactive CLI chatbot |
+| `make generate-questions` | Generate test questions for search eval (N_QUESTIONS=10 per doc) |
+| `make search-eval` | Run search eval over test questions (top_k=10, hit@1/2/4/8) |

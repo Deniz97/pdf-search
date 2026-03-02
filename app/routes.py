@@ -1,3 +1,4 @@
+import asyncio
 import json
 import uuid
 from pathlib import Path
@@ -5,26 +6,28 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from starlette.templating import Jinja2Templates
 from pydantic import BaseModel
-from sqlalchemy import select, text
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 from openai import OpenAI
 
 from app.config import settings
 from app.database import get_db
-from app.embeddings import ask_llm, get_embedding, get_embeddings
 from app.models import Chunk, Document
-from app.pdf_processing import chunk_text, extract_text_from_pdf
+from app.services.embeddings import ask_llm, get_embedding, get_embeddings, rerank
+from app.services.ingest import ingest_pdf
+from app.services.pdf_processing import extract_chunks_from_pdf
+from app.services.search import enhanced_search
 from app.schemas import (
     ChatMessage,
     ChatRequest,
     ChatResponse,
     ChunkResult,
-    ChunkResultWithDocument,
     DocumentResponse,
+    EnhancedSearchResponse,
     QueryRequest,
     QueryResponse,
     SearchOnlyRequest,
-    SearchOnlyResponse,
     UploadResponse,
 )
 
@@ -104,15 +107,14 @@ async def upload_document(
     file_path.write_bytes(content)
 
     try:
-        pages = extract_text_from_pdf(str(file_path))
-        if not pages:
+        chunks = extract_chunks_from_pdf(str(file_path), doc_id=None)
+        if not chunks:
             raise HTTPException(
                 status_code=422, detail="Could not extract text from PDF"
             )
 
-        chunks = chunk_text(pages)
-
-        doc = Document(filename=file.filename, page_count=len(pages))
+        page_count = max(c["page_number"] for c in chunks)
+        doc = Document(filename=file.filename, page_count=page_count)
         db.add(doc)
         await db.flush()
 
@@ -125,6 +127,8 @@ async def upload_document(
                 content=chunk_data["content"],
                 page_number=chunk_data["page_number"],
                 chunk_index=chunk_data["chunk_index"],
+                chunk_type=chunk_data.get("chunk_type"),
+                bbox=chunk_data.get("bbox"),
                 embedding=embedding,
             )
             db.add(chunk)
@@ -151,38 +155,36 @@ async def query_documents(
     body: QueryRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    query_embedding = get_embedding(body.query)
-
-    result = await db.execute(
-        text("""
-            SELECT id, content, page_number, chunk_index,
-                   embedding <=> :embedding AS distance
-            FROM chunks
-            ORDER BY embedding <=> :embedding
-            LIMIT :limit
-        """),
-        {"embedding": str(query_embedding), "limit": body.top_k},
+    response: EnhancedSearchResponse = await enhanced_search(
+        body.query, db, top_k=body.top_k
     )
-    rows = result.fetchall()
 
-    if not rows:
+    # Flatten matched chunks from all documents, sort by score, take top_k
+    all_chunks: list[tuple[str, int | None, int, str | None, float]] = []
+    for doc_result in response.results:
+        for c in doc_result.matched_chunks:
+            all_chunks.append(
+                (c.content, c.page_number, c.chunk_index, c.chunk_type, c.score)
+            )
+    all_chunks.sort(key=lambda x: x[4], reverse=True)
+    top_chunks = all_chunks[: body.top_k]
+
+    if not top_chunks:
         raise HTTPException(
             status_code=404, detail="No documents found. Upload a PDF first."
         )
 
-    sources = []
-    context_texts = []
-    for row in rows:
-        score = 1 - row.distance
-        sources.append(
-            ChunkResult(
-                content=row.content,
-                page_number=row.page_number,
-                chunk_index=row.chunk_index,
-                score=round(score, 4),
-            )
+    sources = [
+        ChunkResult(
+            content=content,
+            page_number=page_number,
+            chunk_index=chunk_index,
+            chunk_type=chunk_type,
+            score=score,
         )
-        context_texts.append(row.content)
+        for content, page_number, chunk_index, chunk_type, score in top_chunks
+    ]
+    context_texts = [c[0] for c in top_chunks]
 
     answer = ask_llm(body.query, context_texts)
 
@@ -208,7 +210,11 @@ async def search_documents(
     # FastAPI parses body params before the handler runs; form data would fail JSON
     # validation, so we parse manually based on content type.
     content_type = (request.headers.get("content-type") or "").lower()
-    if request.headers.get("hx-request") or "application/x-www-form-urlencoded" in content_type or "multipart/form-data" in content_type:
+    if (
+        request.headers.get("hx-request")
+        or "application/x-www-form-urlencoded" in content_type
+        or "multipart/form-data" in content_type
+    ):
         # HTMX / form submission
         form_data = await request.form()
         raw_query = form_data.get("query")
@@ -229,58 +235,45 @@ async def search_documents(
         try:
             raw = await request.json()
         except Exception:
-            raise HTTPException(status_code=422, detail="Request body must be valid JSON")
+            raise HTTPException(
+                status_code=422, detail="Request body must be valid JSON"
+            )
         body = SearchOnlyRequest.model_validate(raw)
         search_query = body.query
         search_top_k = body.top_k
 
-    query_embedding = get_embedding(search_query)
-
-    result = await db.execute(
-        text("""
-            SELECT c.id, c.content, c.page_number, c.chunk_index,
-                   c.document_id, d.filename,
-                   c.embedding <=> :embedding AS distance
-            FROM chunks c
-            JOIN documents d ON d.id = c.document_id
-            ORDER BY c.embedding <=> :embedding
-            LIMIT :limit
-        """),
-        {"embedding": str(query_embedding), "limit": search_top_k},
+    response: EnhancedSearchResponse = await enhanced_search(
+        search_query, db, top_k=search_top_k
     )
-    rows = result.fetchall()
 
-    if not rows:
-        # Check if this is an HTMX request
+    if not response.results:
         if request.headers.get("hx-request"):
             return templates.TemplateResponse(
-                request=request, name="search_results.html", context={"results": []}
+                request=request,
+                name="search_results.html",
+                context={
+                    "response": response,
+                    "query": search_query,
+                },
             )
         raise HTTPException(
             status_code=404, detail="No documents found. Upload a PDF first."
         )
 
-    results = []
-    for row in rows:
-        score = 1 - row.distance
-        results.append(
-            ChunkResultWithDocument(
-                content=row.content,
-                page_number=row.page_number,
-                chunk_index=row.chunk_index,
-                score=round(score, 4),
-                document_id=row.document_id,
-                document_filename=row.filename,
-            )
-        )
-
-    # Return HTML for HTMX requests, JSON for API requests
     if request.headers.get("hx-request"):
+        # Convert to dict for reliable template rendering (Pydantic models can be finicky in Jinja)
+        response_dict = response.model_dump(mode="json")
         return templates.TemplateResponse(
-            request=request, name="search_results.html", context={"results": results}
+            request=request,
+            name="search_results.html",
+            context={
+                "response": response_dict,
+                "query": search_query,
+            },
         )
 
-    return SearchOnlyResponse(query=search_query, results=results)
+    # API: return full enhanced search response
+    return response
 
 
 async def build_system_prompt(db: AsyncSession) -> str:
@@ -312,6 +305,7 @@ async def execute_tool_call(
 ) -> str:
     """Execute a tool call and return JSON results."""
     query_embedding = get_embedding(arguments["query"])
+    fetch_limit = top_k * settings.rerank_top_n_multiplier
 
     if name == "search":
         result = await db.execute(
@@ -324,7 +318,7 @@ async def execute_tool_call(
                 ORDER BY c.embedding <=> :embedding
                 LIMIT :limit
             """),
-            {"embedding": str(query_embedding), "limit": top_k},
+            {"embedding": str(query_embedding), "limit": fetch_limit},
         )
     elif name == "search_in_book":
         result = await db.execute(
@@ -341,14 +335,14 @@ async def execute_tool_call(
             {
                 "embedding": str(query_embedding),
                 "book_name": arguments["book_name"],
-                "limit": top_k,
+                "limit": fetch_limit,
             },
         )
     else:
         return json.dumps({"error": f"Unknown tool: {name}"})
 
     rows = result.fetchall()
-    results = [
+    candidates = [
         {
             "document": r.filename,
             "page": r.page_number,
@@ -358,6 +352,8 @@ async def execute_tool_call(
         }
         for r in rows
     ]
+
+    results = rerank(arguments["query"], candidates, top_n=top_k)
     return json.dumps(results, ensure_ascii=False)
 
 
@@ -443,3 +439,73 @@ async def execute_chat_tool(
     """Execute a tool call from chat and return results."""
     result_json = await execute_tool_call(body.tool_name, body.arguments, db)
     return {"result": result_json}
+
+
+@router.post("/documents/{document_id}/reprocess")
+async def reprocess_document(
+    request: Request,
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Reprocess an errored document. Returns HTML if HTMX request, JSON otherwise."""
+    from uuid import UUID
+
+    try:
+        doc_uuid = UUID(document_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid document ID format")
+
+    # Get document
+    result = await db.execute(select(Document).where(Document.id == doc_uuid))
+    document = result.scalar_one_or_none()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if not document.path:
+        raise HTTPException(
+            status_code=400,
+            detail="Document has no file path. Only documents ingested from file system can be reprocessed.",
+        )
+
+    pdf_path = Path(document.path)
+    if not pdf_path.exists():
+        raise HTTPException(
+            status_code=404, detail=f"PDF file not found at path: {document.path}"
+        )
+
+    # Run sync ingest_pdf in executor
+    engine = create_engine(settings.database_url_sync)
+
+    def _reprocess():
+        with Session(engine) as session:
+            return ingest_pdf(session, pdf_path, reingest=True, path_str=document.path)
+
+    try:
+        chunk_count = await asyncio.to_thread(_reprocess)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reprocessing document: {e}")
+
+    # Refresh document with enrichment
+    await db.refresh(document)
+    from sqlalchemy.orm import selectinload
+
+    result = await db.execute(
+        select(Document)
+        .options(selectinload(Document.enrichment))
+        .where(Document.id == doc_uuid)
+    )
+    document = result.scalar_one()
+
+    # Return HTML if HTMX request, JSON otherwise
+    if request and request.headers.get("hx-request"):
+        return templates.TemplateResponse(
+            request=request,
+            name="document_card_fragment.html",
+            context={"document": document},
+        )
+    else:
+        return {
+            "message": f"Successfully reprocessed document. Created {chunk_count} chunks.",
+            "chunks_created": chunk_count,
+            "document": DocumentResponse.model_validate(document),
+        }

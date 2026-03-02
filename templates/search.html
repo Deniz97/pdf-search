@@ -14,6 +14,7 @@
         <input 
             type="text" 
             name="query" 
+            id="search-query-input"
             placeholder="Enter your search query..." 
             class="search-input"
             required
@@ -29,4 +30,16 @@
 
     <div id="results"></div>
 </div>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const params = new URLSearchParams(window.location.search);
+    const q = params.get('q');
+    if (q) {
+        const input = document.getElementById('search-query-input');
+        if (input) {
+            input.value = decodeURIComponent(q);
+        }
+    }
+});
+</script>
 {% endblock %}

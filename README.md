@@ -1,76 +1,50 @@
-# PDF Search API
+Hello, this is a demo project to display pdf RAG+retrieval capabilities.
 
-A FastAPI service that lets you upload PDF documents and search through them using natural language queries. Uses PostgreSQL with pgvector for vector storage, OpenAI embeddings for semantic search, and OCR (pdf2image + pytesseract) for text extraction.
+We have 38 pdfs in example-pdfs repo, all about current geopolitics.
 
-## Prerequisites
+Our system consist of these steps:
 
-- [uv](https://docs.astral.sh/uv/) (Python package manager)
-- [Docker](https://www.docker.com/) (for PostgreSQL + pgvector)
-- [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) (`brew install tesseract` on macOS)
-- [Poppler](https://poppler.freedesktop.org/) (`brew install poppler` on macOS — required by pdf2image)
-- An OpenAI API key
+1) make ingest -> OCRs the pdfs, chunk them, and embed those chunks.
+2) make enrich -> Enrich the pdf data with llm generated memory
+3) make test-questions -> Generate random question each related to a single pdf and chunk.
+4) make search-eval -> Asks the generated questions and measure the system's accuracy.
 
-## Quick Start
+Bonus: "make chat" for chat cli do converse with the documents.
 
-```bash
-# 1. Start PostgreSQL with pgvector
-docker compose up -d
+# STACK
 
-# 2. Configure environment
-cp .env.example .env
-# Edit .env and set your OPENAI_API_KEY
+We use uv with python 3.11. To run, simply install "uv" (https://github.com/astral-sh/uv) in your system, then run these commands:
 
-# 3. Install dependencies
-uv sync
+$ make deps
+$ make build
 
-# 4. Run the server
-uv run uvicorn app.main:app --reload
-```
 
-The server will be available at `http://localhost:8000`:
-- **Web UI**: http://localhost:8000 (Search page) and http://localhost:8000/chat (Chat page)
-- **API Docs**: http://localhost:8000/docs
-- **API**: http://localhost:8000/api/v1
+And you are set.
 
-## Web Interface
 
-The application includes a web UI built with Jinja2 templates and HTMX:
+# DESIGN
 
-- **Search Page** (`/`) - Query documents and view matched sections with scores
-- **Chat Page** (`/chat`) - Interactive chat interface with tool calling support
+## Embedding time
 
-## API Endpoints
+So to make the case more interesting, I employed a dynamical memory, which for each document, allows the LLM to extract memories out of the chunks it traverse.
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET`  | `/` | Search page (web UI) |
-| `GET`  | `/chat` | Chat page (web UI) |
-| `POST` | `/api/v1/documents/upload` | Upload a PDF file for processing |
-| `POST` | `/api/v1/documents/query` | Search documents with natural language (returns LLM answer) |
-| `POST` | `/api/v1/documents/search` | Search documents (returns matched chunks only) |
-| `POST` | `/api/v1/chat` | Chat endpoint with tool calling |
-| `GET`  | `/api/v1/documents` | List all uploaded documents |
-| `GET`  | `/health` | Health check |
+I asked llm to keep track of a short term memory as part of its context. It is limited, and we remove the oldest entries every turn, the dropped entries goes into the long term memory.
 
-### Upload a PDF
+Each memory is either a "context" of a "fact". We also use these memories to generate a description and a list of tags for the document.
 
-```bash
-curl -X POST http://localhost:8000/api/v1/documents/upload \
-  -F "file=@sample.pdf"
-```
+## Retrieval Time
 
-### Query documents
+During the retrieval, we first take user query, and expand it further into queries and regexes more appropriate to run on our data model, mainly memory contexts and facts. We also ask LLM to attach a "relevancy score" to each query or regex it generated.
 
-```bash
-curl -X POST http://localhost:8000/api/v1/documents/query \
-  -H "Content-Type: application/json" \
-  -d '{"query": "What is the main topic?", "top_k": 5}'
-```
+Then we employ a scoring algorithm to bring all those different kind of matching together, and come up with a final document score, which we display to user.
 
-## Architecture
+## DATA
 
-1. **PDF Upload**: PDF is converted to images (pdf2image), then OCR'd (pytesseract)
-2. **Chunking**: Text is split into chunks of 5 sentences with 1 sentence overlap
-3. **Embedding**: Each chunk is embedded using OpenAI's `text-embedding-3-small`
-4. **Storage**: Chunks and embeddings are stored in PostgreSQL with pgvector
-5. **Query**: User query is embedded, nearest chunks are retrieved via cosine distance, and an LLM generates an answer from the context
+As an example data, I manually downloaded around 40 contemporary geopolitics related PDFs from the web, all under 20 pages.
+
+## RESULT
+
+
+## UI
+
+You can click on the "Documents" menu from the top bar to inspect the embedded documents, chunks and memories.

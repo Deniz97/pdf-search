@@ -1,10 +1,10 @@
 ---
-globs: "**/embeddings.py,**/routes.py,**/models.py,**/schemas.py"
+globs: "**/embeddings.py,**/search.py,**/routes.py,**/models.py,**/schemas.py,**/chat.py"
 ---
 # RAG (Retrieval-Augmented Generation)
 
 ## Context
-The RAG system embeds document chunks via OpenAI, stores them in pgvector, retrieves by cosine similarity, and generates answers with an LLM. Core files: `embeddings.py` (OpenAI calls), `routes.py` (API search), `models.py` (schema), `schemas.py` (Pydantic).
+The RAG system embeds document chunks via OpenAI, stores them in pgvector, retrieves by cosine similarity, and generates answers with an LLM. Core files: `app/services/search.py` (enhanced search with enrichment boosts), `app/services/embeddings.py` (OpenAI, Cohere rerank), `routes.py` (API), `models.py`, `schemas.py`. The web/API query and search endpoints use `enhanced_search`; the CLI chat (`app/cli/chat.py`) uses raw vector+rerank.
 
 ## Embedding
 - Model: `text-embedding-3-small` (1536 dimensions)
@@ -28,6 +28,20 @@ ORDER BY c.embedding <=> :embedding
 LIMIT :limit
 ```
 
+## Reranking
+- **Cohere** reranker applied after vector search, before returning results
+- Model: `rerank-v3.5` (configurable via `settings.rerank_model`)
+- Over-fetch: `top_k * settings.rerank_top_n_multiplier` (default 4x), then rerank down to `top_k`
+- Function: `rerank(query, documents, top_n)` in `app/services/embeddings.py`
+- Each dict must have a `"content"` key; returned list preserves other fields, score replaced by Cohere relevance
+- Applied in `app/services/search.py` (enhanced_search), routes tool execution, and `app/cli/chat.py`
+
+## Enhanced Search (`app/services/search.py`)
+- Uses `enhanced_search(query, db, top_k)` for API/query endpoints
+- When enrichment data exists: LLM expands query into 8 signal types (context_cues, fact_cues, description_cues, tag_cues + regex variants), applies embedding and regex boosts against `memories` and `document_enrichments`, then Cohere rerank
+- Falls back to plain vector+rerank when no enrichment data
+- Returns `EnhancedSearchResponse` with `user_query`, `generated_cues`, `generated_regexes`, `results` (list of `DocumentResult`)
+
 ## LLM Answer Generation
 - Model: `gpt-4o-mini`
 - System prompt instructs to only use provided context
@@ -41,6 +55,7 @@ LIMIT :limit
 |--------|------|-------|
 | id | UUID | PK, auto-generated |
 | filename | VARCHAR | Original PDF name |
+| path | VARCHAR | Nullable; filesystem path (batch ingest only), unique |
 | page_count | INTEGER | Total OCR'd pages |
 | processed_status | VARCHAR | waiting/started/finished/errored |
 | last_processed_at | TIMESTAMP | Nullable |
@@ -55,12 +70,31 @@ LIMIT :limit
 | content | TEXT | Chunk text |
 | page_number | INTEGER | Source page |
 | chunk_index | INTEGER | Sequential index |
+| chunk_type | VARCHAR | text, title, table (from PP-Structure) |
+| bbox | JSONB | [x1,y1,x2,y2] in page coords |
 | embedding | Vector(1536) | pgvector column |
 
+### DocumentEnrichment (1:1 with Document)
+| Column | Type | Notes |
+|--------|------|-------|
+| document_id | UUID | FK, unique |
+| title, description | VARCHAR, TEXT | LLM-generated |
+| tags | JSON | Array of strings |
+| description_embedding, tags_embedding | Vector(1536) | For cue matching |
+| enrichment_status | VARCHAR | pending/started/finished/errored |
+
+### Memory (per-chunk context and facts)
+| Column | Type | Notes |
+|--------|------|-------|
+| document_id, chunk_id | UUID | FK |
+| type | VARCHAR | "context" or "fact" |
+| content | TEXT | Extracted text |
+| embedding | Vector(1536) | For cue matching |
+
 ## Chunking Strategy
-- Split text into sentences via regex: `(?<=[.!?])\s+`
-- Window: 5 sentences per chunk, 1 sentence overlap
-- Configurable via `settings.chunk_sentences` and `settings.chunk_overlap`
+- **PP-Structure blocks** — 1:1 mapping: each text/title/table block from PaddleOCR PP-Structure becomes one chunk
+- Figure/image blocks are excluded from search
+- Tables: HTML from PP-Structure → plain text for embedding
 
 ## Anti-patterns
 - **Don't use L2 distance** — use cosine distance (`<=>`) for text embeddings

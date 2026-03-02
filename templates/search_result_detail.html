@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+
+{% block title %}{{ doc_result.document.filename }} — Search Result{% endblock %}
+
+{% block content %}
+<div class="sr-detail">
+    <a href="/?q={{ query|urlencode }}" class="sr-back">← Back to search</a>
+
+    <header class="sr-header">
+        <div class="sr-query-badge">Query: <span class="sr-query-text">"{{ query }}"</span></div>
+        <h1 class="sr-doc-title">{{ doc_result.document.title or doc_result.document.filename }}</h1>
+        <p class="sr-doc-filename">{{ doc_result.document.filename }}</p>
+        <div class="sr-meta-row">
+            <span>{{ doc_result.matched_chunks|length }} chunk{{ 's' if doc_result.matched_chunks|length != 1 else '' }} matched</span>
+            {% if doc_result.description_matched %}
+            <span class="sr-badge sr-badge-desc">description matched</span>
+            {% endif %}
+            {% if doc_result.matched_tags %}
+            <span class="sr-tags">
+                {% for tag in doc_result.matched_tags %}
+                <span class="sr-tag">{{ tag }}</span>
+                {% endfor %}
+            </span>
+            {% endif %}
+            <a href="/documents/{{ doc_result.document.id }}" class="sr-view-doc">View full document →</a>
+        </div>
+    </header>
+
+    {% if doc_result.document.description %}
+    <section class="sr-section sr-description">
+        <h3>Document Description</h3>
+        <p>{{ doc_result.document.description }}</p>
+    </section>
+    {% endif %}
+
+    <section class="sr-section sr-chunks">
+        <h3>Matched Chunks</h3>
+        <div class="sr-chunk-list">
+            {% for chunk in doc_result.matched_chunks %}
+            <div class="sr-chunk-card">
+                <div class="sr-chunk-header">
+                    <span class="sr-chunk-meta">Page {{ chunk.page_number or 'N/A' }} · Chunk {{ chunk.chunk_index }}</span>
+                    <span class="sr-chunk-score">Score: {{ "%.4f"|format(chunk.score) }}</span>
+                </div>
+                <div class="sr-chunk-content">{{ chunk.content }}</div>
+            </div>
+            {% endfor %}
+        </div>
+    </section>
+
+    {% if doc_result.matched_contexts %}
+    <section class="sr-section sr-contexts">
+        <h3><span class="sr-section-icon">◇</span> Matched Contexts</h3>
+        <p class="sr-section-desc">Background, setting, and narrative elements that matched your query.</p>
+        <div class="sr-memory-grid">
+            {% for ctx in doc_result.matched_contexts %}
+            <div class="sr-memory-card sr-context-card">
+                <div class="sr-memory-content">{{ ctx.content }}</div>
+            </div>
+            {% endfor %}
+        </div>
+    </section>
+    {% endif %}
+
+    {% if doc_result.matched_facts %}
+    <section class="sr-section sr-facts">
+        <h3><span class="sr-section-icon">◆</span> Matched Facts</h3>
+        <p class="sr-section-desc">Specific claims, data, and conclusions that matched your query.</p>
+        <div class="sr-memory-grid">
+            {% for fact in doc_result.matched_facts %}
+            <div class="sr-memory-card sr-fact-card">
+                <div class="sr-memory-content">{{ fact.content }}</div>
+            </div>
+            {% endfor %}
+        </div>
+    </section>
+    {% endif %}
+</div>
+{% endblock %}

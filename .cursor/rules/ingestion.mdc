@@ -1,20 +1,28 @@
 ---
-globs: "**/ingest.py,**/pdf_processing.py,**/cache.py"
+globs: "**/ingest.py,**/pdf_processing.py,**/cache.py,**/enricher.py"
 ---
-# Ingestion Pipeline
+# Ingestion & Enrichment Pipeline
 
 ## Context
-The ingestion pipeline processes PDFs into searchable vector chunks. Entry point is `app/ingest.py`, orchestrating `app/pdf_processing.py` and `app/cache.py`.
+The ingestion pipeline processes PDFs into searchable vector chunks. Entry point is `app/cli/ingest.py`, orchestrating `app/services/pdf_processing.py` and `app/utils/cache.py`. Enrichment runs separately via `app/cli/enricher.py` after ingest. Single-doc services: `app/services/ingest.py` (ingest_pdf), `app/services/enricher.py` (enrich_document). **Upload** (via `routes.py`) is a separate path: in-memory processing, no path/cache.
 
-## Pipeline Steps
-1. **Register document** — insert row with `processed_status='waiting'`, get UUID
+## Batch Ingest Pipeline (path-based)
+1. **Register document** — upsert by `path` (unique), set `processed_status='waiting'`
 2. **Copy PDF** — to `cache/{doc_id}/source.pdf`
-3. **pdf2image** — convert to page PNGs, cached at `cache/{doc_id}/images/`
-4. **OCR** — pytesseract on each image, cached at `cache/{doc_id}/text/` (one .txt file per page)
-5. **Chunk** — 5-sentence windows with 1-sentence overlap
+3. **pdf2image** — convert to page PNGs at `settings.pdf_dpi` (~250), cached at `cache/{doc_id}/images/`
+4. **PP-Structure** — PaddleOCR layout+OCR+table recognition per page, cached at `cache/{doc_id}/ppstructure.json`
+5. **Chunk** — 1:1 block→chunk for text, title, table blocks (figure/image excluded)
 6. **Embed** — OpenAI `text-embedding-3-small`, batched in groups of 100
-7. **Store** — insert chunks with embeddings into `chunks` table
+7. **Store** — insert chunks with embeddings, chunk_type, bbox into `chunks` table
 8. **Finalize** — set `processed_status='finished'`
+- Commands: `ingest N|ALL`, `reingest N|ALL`, `prune` (prune removes DB records for missing files only)
+
+## Enrichment Pipeline (`app/cli/enricher.py`, service: `app/services/enricher.py`)
+- Runs after ingest: `make enrich` or `make reenrich`
+- Processes chunks sequentially with STM (short-term memory) of context/fact items
+- Overflowed STM → LTM → feeds document-level metadata (title, description, tags)
+- Populates `document_enrichments` and `memories` tables
+- Config: `stm_max_size`, `ltm_sample_max_chars` in settings
 
 ## Document Status Lifecycle
 ```
@@ -29,17 +37,23 @@ waiting → started → finished
 cache/{doc_id}/
   source.pdf
   images/page_0001.png, page_0002.png, ...
-  text/page_0001.txt, page_0002.txt, ...
+  ppstructure.json   # PP-Structure blocks per page (text/title/table/figure)
 ```
 
 ## Patterns
 
 ### Always check cache before processing
+Cache lives in `app.utils.cache`. Use before expensive steps:
 ```python
+from app.utils import cache
+
 if cache.has_cached_images(doc_id):
     return cache.load_images(doc_id)
-images = convert_from_path(pdf_path)
-cache.save_images(doc_id, images)
+# ... run pdf2image, then cache.save_images(doc_id, images)
+
+if cache.has_cached_ppstructure(doc_id):
+    return cache.load_ppstructure(doc_id)
+# ... run PP-Structure, then cache.save_ppstructure(doc_id, pages_blocks)
 ```
 
 ### Always update status on error
@@ -54,7 +68,8 @@ except Exception as e:
 The ingest script uses `create_engine(settings.database_url_sync)` with `psycopg2`, not the async engine. Only the FastAPI API uses async.
 
 ## Anti-patterns
-- **Don't skip the cache check** — OCR is expensive (seconds per page); always check before running
+- **Don't skip the cache check** — PP-Structure is expensive (seconds per page); always check before running
 - **Don't use the async engine in CLI scripts** — use `database_url_sync` with `Session`
 - **Don't hardcode batch sizes** — use the `batch_size` variable (currently 100 for embeddings)
 - **Don't commit before all chunks are inserted** — commit once after the full embedding loop
+- **Don't confuse upload with batch ingest** — upload uses no path/cache; batch ingest is path-based and uses cache

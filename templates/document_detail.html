@@ -7,6 +7,31 @@
     <div class="document-header">
         <a href="/documents" class="back-link">← Back to Documents</a>
         <h1>{{ document.filename }}</h1>
+        {% if document.path %}
+        <div class="info-item">
+            <strong>Path:</strong> <span class="path-text">{{ document.path }}</span>
+        </div>
+        {% endif %}
+        {% if document.enrichment %}
+        {% if document.enrichment.title %}
+        <div class="document-title-enriched">
+            <strong>Title:</strong> {{ document.enrichment.title }}
+        </div>
+        {% endif %}
+        {% if document.enrichment.description %}
+        <div class="document-description-full">
+            <strong>Description:</strong> {{ document.enrichment.description }}
+        </div>
+        {% endif %}
+        {% if document.enrichment.tags %}
+        <div class="document-tags-full">
+            <strong>Tags:</strong>
+            {% for tag in document.enrichment.tags %}
+            <span class="tag">{{ tag }}</span>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% endif %}
         <div class="document-info">
             <div class="info-item">
                 <strong>Status:</strong>
@@ -41,17 +66,27 @@
     <div class="chunks-section">
         <h2>Chunks ({{ chunks|length }})</h2>
         {% if chunks %}
-        <div class="chunks-list">
+        <div class="chunks-list-compact">
             {% for chunk in chunks %}
-            <div class="chunk-item">
-                <div class="chunk-header">
-                    <span class="chunk-meta">
+            <div class="chunk-item-compact">
+                <div class="chunk-header-compact">
+                    <span class="chunk-meta-compact">
                         Page {{ chunk.page_number or 'N/A' }} • Chunk {{ chunk.chunk_index }}
                     </span>
                 </div>
-                <div class="chunk-content">
-                    {{ chunk.content }}
+                <div class="chunk-content-compact">
+                    {{ chunk.content[:200] }}{% if chunk.content|length > 200 %}...{% endif %}
                 </div>
+                {% if memories_by_chunk.get(chunk.id) %}
+                <div class="chunk-memories">
+                    {% for memory in memories_by_chunk[chunk.id] %}
+                    <div class="memory-item memory-{{ memory.type }}">
+                        <span class="memory-type">{{ memory.type }}:</span>
+                        <span class="memory-content">{{ memory.content }}</span>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endif %}
             </div>
             {% endfor %}
         </div>

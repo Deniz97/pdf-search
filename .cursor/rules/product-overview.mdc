@@ -11,6 +11,8 @@ A PDF document search service. Users upload PDFs, the system extracts text via O
 ### Web UI (`templates/`, `app/main.py`)
 - **Search Page** (`/`) — Query box with HTMX, displays matched chunks with document info and scores
 - **Chat Page** (`/chat`) — Interactive chat interface with tool calling (replicates CLI chatbot)
+- **Documents Page** (`/documents`) — List all uploaded documents with enrichment status
+- **Document Detail** (`/documents/{id}`) — Document info, chunks, memories; supports reprocess
 - Server-side rendered with Jinja2 templates, single-process architecture
 
 ### REST API (`app/routes.py`)
@@ -18,47 +20,65 @@ A PDF document search service. Users upload PDFs, the system extracts text via O
 - `POST /api/v1/documents/query` — Semantic search + LLM-generated answer
 - `POST /api/v1/documents/search` — Search-only endpoint (returns chunks, no LLM answer)
 - `POST /api/v1/chat` — Chat endpoint with tool calling support
+- `POST /api/v1/chat/tool` — Execute a single tool call (for chat UI)
 - `GET /api/v1/documents` — List all documents
+- `POST /api/v1/documents/{id}/reprocess` — Reprocess an errored batch-ingested document
 - Endpoints detect HTMX requests and return HTML fragments when appropriate
 
-### CLI Chatbot (`app/chat.py`)
+### CLI Chatbot (`app/cli/chat.py`)
 - Interactive REPL with conversation history
 - LLM uses OpenAI tool calling to decide when to search
 - Two tools: `search(query)` across all docs, `search_in_book(book_name, query)` for a specific doc
 - System prompt includes the full document list with page counts
 
 ## Data Flow
-1. PDF uploaded → pdf2image → page images (cached)
-2. Page images → pytesseract OCR → text per page (cached)
-3. Text → sentence splitting → 5-sentence chunks with 1-sentence overlap
-4. Chunks → OpenAI embedding → stored in pgvector
-5. Query → embed → cosine distance search → top-K chunks → LLM answer
+1. **Ingest:** PDF → pdf2image → PP-Structure (layout+OCR+table) → blocks → chunks (1:1 text/table) → embeddings → pgvector
+2. **Enrich** (optional): Chunks → LLM extracts context/fact memories → document metadata (title, description, tags)
+3. **Search:** Query → (optional) LLM query expansion → vector search + enrichment boosts → Cohere rerank → results
+4. **Answer:** Top chunks → LLM generates answer
 
-## Batch Ingestion (`app/ingest.py`)
-- `make ingest` processes all PDFs in `example-pdfs/`
-- Tracks processing status per document: `waiting` → `started` → `finished` / `errored`
-- Skips already-finished documents on re-run
-- Retries errored documents, reusing cached images/OCR
+## Ingestion Paths
+- **Batch ingest** (`app/cli/ingest.py`): PDFs from `example-pdfs/`, uses `path` as unique key, cache in `cache/{doc_id}/`. Service: `app/services/ingest.py` (single-doc `ingest_pdf`).
+- **Upload** (`routes.py`): Single PDF via API, in-memory processing, no path/cache (ephemeral)
+- **Enrich** (`app/cli/enricher.py`): `make enrich` after ingest — populates `document_enrichments` and `memories`. Service: `app/services/enricher.py` (single-doc `enrich_document`).
+
+## Search Evaluation
+- **Test questions** (`app/cli/generate_test_questions.py`): Samples chunks+memories, uses LLM to generate one query per sampled chunk (direct, paraphrase, keyword, conceptual, etc.), stores in `search_test_questions`
+- **Eval run** (`app/cli/run_search_eval.py`): Runs questions through `enhanced_search`, records chunk/doc ranks in `search_eval_results`, reports hit@1/2/4/8 and recall by query type
+- Tables: `search_test_questions`, `search_eval_runs`, `search_eval_results`
+- Commands: `make generate-questions N_QUESTIONS=30` (or `make test-questions`), `make search-eval`
 
 ## Project Structure
 ```
 app/
-├── main.py            # FastAPI app, lifespan, template routes (/ and /chat)
+├── main.py            # FastAPI app, lifespan, template routes
 ├── config.py          # pydantic-settings
 ├── database.py        # async SQLAlchemy engine, init_db
-├── models.py          # Document, Chunk (SQLAlchemy)
+├── models.py          # Document, Chunk, DocumentEnrichment, Memory
 ├── schemas.py         # Pydantic request/response models
-├── routes.py          # API endpoints (handles HTMX requests for HTML fragments)
-├── pdf_processing.py  # pdf2image, OCR, chunking
-├── embeddings.py      # OpenAI embeddings + LLM
-├── cache.py           # Disk cache for images/OCR
-├── ingest.py          # Batch PDF ingestion CLI
-└── chat.py            # Interactive chatbot CLI
+├── routes.py          # API endpoints (handles HTMX)
+├── services/          # Business logic (single-doc primitives)
+│   ├── search.py     # enhanced_search — multi-signal retrieval, enrichment boosts
+│   ├── embeddings.py # OpenAI embeddings, Cohere rerank, LLM
+│   ├── pdf_processing.py  # pdf2image, OCR, chunking
+│   ├── ingest.py     # ingest_pdf — single-doc (API + CLI)
+│   └── enricher.py   # enrich_document — single-doc
+├── utils/
+│   └── cache.py      # Disk cache for images/OCR (batch ingest only)
+└── cli/              # Batch CLI entry points
+    ├── ingest.py     # ingest, reingest, prune
+    ├── enricher.py   # enrich, reenrich
+    ├── chat.py       # Interactive chatbot
+    ├── generate_test_questions.py  # Search eval: generate test questions
+    └── run_search_eval.py  # Search eval: run eval, compute metrics
 templates/
-├── base.html          # Base template with navigation
-├── search.html        # Search page template
-├── chat.html          # Chat page template
-└── search_results.html # Search results fragment (for HTMX)
+├── base.html              # Base template with navigation
+├── search.html            # Search page
+├── search_results.html    # Search results fragment (HTMX)
+├── chat.html              # Chat page
+├── documents.html         # Documents list
+├── document_detail.html   # Document detail and chunks
+└── document_card_fragment.html  # Document card (HTMX, reprocess)
 static/
 └── style.css          # Global stylesheet
 ```

@@ -9,29 +9,68 @@
     {% if documents %}
     <div class="documents-grid">
         {% for doc in documents %}
-        <a href="/documents/{{ doc.id }}" class="document-card">
-            <div class="document-card-header">
-                <h2 class="document-title">{{ doc.filename }}</h2>
-                <span class="document-status status-{{ doc.processed_status }}">
-                    {{ doc.processed_status }}
-                </span>
-            </div>
-            <div class="document-card-body">
-                <div class="document-meta">
-                    <span class="meta-item">
-                        <strong>Pages:</strong> {{ doc.page_count }}
-                    </span>
-                    <span class="meta-item">
-                        <strong>Uploaded:</strong> 
-                        {% if doc.created_at %}
-                            {{ doc.created_at.strftime('%Y-%m-%d %H:%M') }}
-                        {% else %}
-                            N/A
-                        {% endif %}
-                    </span>
+        <div class="document-card-wrapper">
+            <a href="/documents/{{ doc.id }}" class="document-card">
+                <div class="document-card-header">
+                    <div class="document-statuses">
+                        <span class="document-status status-{{ doc.processed_status }}">
+                            {{ doc.processed_status }}
+                        </span>
+                        <span class="document-status status-{{ doc.enrichment.enrichment_status if doc.enrichment else 'pending' }}">
+                            enrich: {{ doc.enrichment.enrichment_status if doc.enrichment else 'pending' }}
+                        </span>
+                    </div>
+                    <h2 class="document-title">{{ doc.filename }}</h2>
                 </div>
-            </div>
-        </a>
+                <div class="document-card-body">
+                    {% if doc.path %}
+                    <div class="document-meta">
+                        <span class="meta-item">
+                            <strong>Path:</strong> 
+                            <span class="path-text">{{ doc.path }}</span>
+                        </span>
+                    </div>
+                    {% endif %}
+                    {% if doc.enrichment and doc.enrichment.description %}
+                    <div class="document-description">
+                        {{ doc.enrichment.description }}
+                    </div>
+                    {% endif %}
+                    {% if doc.enrichment and doc.enrichment.tags %}
+                    <div class="document-tags">
+                        {% for tag in doc.enrichment.tags %}
+                        <span class="tag">{{ tag }}</span>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                    <div class="document-meta">
+                        <span class="meta-item">
+                            <strong>Pages:</strong> {{ doc.page_count }}
+                        </span>
+                        <span class="meta-item">
+                            <strong>Uploaded:</strong> 
+                            {% if doc.created_at %}
+                                {{ doc.created_at.strftime('%Y-%m-%d %H:%M') }}
+                            {% else %}
+                                N/A
+                            {% endif %}
+                        </span>
+                    </div>
+                </div>
+            </a>
+            {% if doc.processed_status == 'errored' and doc.path %}
+            <form 
+                method="post" 
+                action="/api/v1/documents/{{ doc.id }}/reprocess"
+                hx-post="/api/v1/documents/{{ doc.id }}/reprocess"
+                hx-target="closest .document-card-wrapper"
+                hx-swap="outerHTML"
+                class="reprocess-form"
+            >
+                <button type="submit" class="btn-reprocess">Reprocess</button>
+            </form>
+            {% endif %}
+        </div>
         {% endfor %}
     </div>
     {% else %}

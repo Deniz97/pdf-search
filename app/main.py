@@ -11,7 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import init_db, get_db
 from app.routes import router
-from app.models import Document, Chunk
+from app.models import Document, Chunk, Memory, SearchTestQuestion
+from app.services.search import enhanced_search
 
 
 @asynccontextmanager
@@ -55,16 +56,84 @@ async def search_page(request: Request):
     return templates.TemplateResponse(request=request, name="search.html", context={})
 
 
+@app.get("/search/result", response_class=HTMLResponse)
+async def search_result_detail_page(
+    request: Request,
+    q: str,
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Search result detail page - shows one document's matches for a query."""
+    from uuid import UUID
+
+    try:
+        doc_uuid = UUID(document_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid document ID format")
+
+    if not q or not q.strip():
+        raise HTTPException(status_code=400, detail="Search query is required")
+
+    response = await enhanced_search(q.strip(), db, top_k=20)
+    doc_result = next(
+        (r for r in response.results if r.document.id == doc_uuid),
+        None,
+    )
+
+    if not doc_result:
+        raise HTTPException(
+            status_code=404,
+            detail="Document not found in search results. Try searching again.",
+        )
+
+    return templates.TemplateResponse(
+        request=request,
+        name="search_result_detail.html",
+        context={
+            "query": q.strip(),
+            "doc_result": doc_result,
+            "response": response,
+        },
+    )
+
+
 @app.get("/chat", response_class=HTMLResponse)
 async def chat_page(request: Request):
     """Chat page - interactive chat interface."""
     return templates.TemplateResponse(request=request, name="chat.html", context={})
 
 
+@app.get("/test-questions", response_class=HTMLResponse)
+async def test_questions_page(request: Request, db: AsyncSession = Depends(get_db)):
+    """Test questions page - shows generated search eval test questions."""
+    from sqlalchemy.orm import selectinload
+
+    result = await db.execute(
+        select(SearchTestQuestion)
+        .options(
+            selectinload(SearchTestQuestion.target_document),
+            selectinload(SearchTestQuestion.target_chunk),
+        )
+        .order_by(SearchTestQuestion.created_at.desc())
+    )
+    questions = result.scalars().all()
+    return templates.TemplateResponse(
+        request=request,
+        name="test_questions.html",
+        context={"questions": questions},
+    )
+
+
 @app.get("/documents", response_class=HTMLResponse)
 async def documents_page(request: Request, db: AsyncSession = Depends(get_db)):
     """Documents list page - shows all uploaded documents."""
-    result = await db.execute(select(Document).order_by(Document.created_at.desc()))
+    from sqlalchemy.orm import selectinload
+
+    result = await db.execute(
+        select(Document)
+        .options(selectinload(Document.enrichment))
+        .order_by(Document.created_at.desc())
+    )
     documents = result.scalars().all()
     return templates.TemplateResponse(
         request=request, name="documents.html", context={"documents": documents}
@@ -77,14 +146,19 @@ async def document_detail_page(
 ):
     """Document detail page - shows document info and all its chunks."""
     from uuid import UUID
+    from sqlalchemy.orm import selectinload
 
     try:
         doc_uuid = UUID(document_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid document ID format")
 
-    # Get document
-    result = await db.execute(select(Document).where(Document.id == doc_uuid))
+    # Get document with enrichment
+    result = await db.execute(
+        select(Document)
+        .options(selectinload(Document.enrichment))
+        .where(Document.id == doc_uuid)
+    )
     document = result.scalar_one_or_none()
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -97,8 +171,27 @@ async def document_detail_page(
     )
     chunks = chunks_result.scalars().all()
 
+    # Get memories for all chunks
+    memories_by_chunk = {}
+    if chunks:
+        chunk_ids = [chunk.id for chunk in chunks]
+        memories_result = await db.execute(
+            select(Memory).where(Memory.chunk_id.in_(chunk_ids))
+        )
+        memories = memories_result.scalars().all()
+
+        # Group memories by chunk_id
+        for memory in memories:
+            if memory.chunk_id not in memories_by_chunk:
+                memories_by_chunk[memory.chunk_id] = []
+            memories_by_chunk[memory.chunk_id].append(memory)
+
     return templates.TemplateResponse(
         request=request,
         name="document_detail.html",
-        context={"document": document, "chunks": chunks},
+        context={
+            "document": document,
+            "chunks": chunks,
+            "memories_by_chunk": memories_by_chunk,
+        },
     )

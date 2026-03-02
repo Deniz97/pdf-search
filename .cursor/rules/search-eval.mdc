@@ -1,0 +1,48 @@
+---
+globs: "**/cli/generate_test_questions.py,**/cli/run_search_eval.py"
+---
+# Search Evaluation Pipeline
+
+## Context
+
+Two-phase pipeline for evaluating search quality:
+
+1. **Generate test questions** (`app/cli/generate_test_questions.py`) — Samples chunks from finished documents, uses LLM to generate one search query per chunk. Equal questions per document. Stores in `search_test_questions`.
+2. **Run eval** (`app/cli/run_search_eval.py`) — Loads questions, runs each through `enhanced_search` (same top_k=10 as live UI), records chunk/doc ranks in `search_eval_results`, reports hit@1/2/4/8 and recall by query type.
+
+Tables: `search_test_questions`, `search_eval_runs`, `search_eval_results`.
+
+Commands: `make generate-questions N_QUESTIONS=10`, `make search-eval`.
+
+## Query Types
+
+LLM assigns one type per question: `direct`, `paraphrase`, `keyword`, `conceptual`, `fact-seeking`, `summary-style`. Used for stratified metrics (by_query_type).
+
+## Patterns
+
+### Question generation
+- Fetch docs with chunks and memories (LEFT JOIN memories)
+- Skip chunks that already have questions (existing_chunks_by_doc)
+- Sample `min(need, len(available))` chunks per doc
+- LLM returns JSON: `{"queries": [{"text": "...", "type": "..."}]}` — take first valid query
+
+### Eval run
+- Uses `async_session()` + `enhanced_search` (async) — same as API
+- Sync Session for loading questions and inserting results
+- Record `chunk_rank` and `doc_rank` (1-based; None if miss)
+- Metrics: hit@k = count where rank <= k; recall@k = hit@k / n
+
+### Rank lookup
+```python
+for i, cid in enumerate(chunk_order):
+    if str(cid) == target_chunk_str:
+        chunk_rank = i + 1  # 1-based
+        break
+```
+
+## Anti-patterns
+
+- **Don't use plain vector search** — use `enhanced_search` to match live UI (query expansion + enrichment boosts + rerank)
+- **Don't change SEARCH_TOP_K** — must match live UI (10) for comparable metrics
+- **Don't run eval before generating questions** — `search_test_questions` must be populated first
+- **Don't use async engine in generate_test_questions** — sync Session with `database_url_sync`
