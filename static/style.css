@@ -178,13 +178,51 @@ body {
     color: inherit;
 }
 
-.doc-result-item:hover .result-doc {
+.doc-result-item:hover .result-doc-name {
     text-decoration: underline;
 }
 
 .result-doc {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.result-doc-title {
+    font-weight: 600;
+    font-size: 1rem;
+    color: #1e40af;
+}
+
+.result-doc-description {
+    font-size: 0.875rem;
+    color: #6b7280;
+    line-height: 1.4;
+}
+
+.result-doc-name {
     font-weight: 600;
     color: #2563eb;
+}
+
+.result-doc-pages {
+    font-size: 0.75rem;
+    color: #9ca3af;
+}
+
+.result-doc-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-top: 0.25rem;
+}
+
+.result-doc-tag {
+    background: #e0e7ff;
+    color: #3730a3;
+    padding: 0.15rem 0.5rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
 }
 
 .result-meta {

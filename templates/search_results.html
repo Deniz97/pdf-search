@@ -26,7 +26,23 @@
     {% for doc_result in response.results %}
     <a href="/search/result?q={{ query|urlencode }}&document_id={{ doc_result.document.id }}" class="result-item doc-result-item doc-result-link">
         <div class="result-header">
-            <div class="result-doc">{{ doc_result.document.filename }}</div>
+            <div class="result-doc">
+                {% if doc_result.document.title %}
+                <div class="result-doc-title">{{ doc_result.document.title }}</div>
+                {% endif %}
+                {% if doc_result.document.description %}
+                <div class="result-doc-description">{{ doc_result.document.description[:200] }}{% if doc_result.document.description|length > 200 %}…{% endif %}</div>
+                {% endif %}
+                <div class="result-doc-name">{{ doc_result.document.filename }}</div>
+                <div class="result-doc-pages">{{ doc_result.document.page_count }} page{{ 's' if doc_result.document.page_count != 1 else '' }}</div>
+                {% if doc_result.document.tags %}
+                <div class="result-doc-tags">
+                    {% for tag in doc_result.document.tags %}
+                    <span class="result-doc-tag">{{ tag }}</span>
+                    {% endfor %}
+                </div>
+                {% endif %}
+            </div>
             <div class="result-meta">
                 <span>{{ doc_result.matched_chunks|length }} matching chunk{{ 's' if doc_result.matched_chunks|length != 1 else '' }}</span>
                 {% if doc_result.matched_chunks %}
