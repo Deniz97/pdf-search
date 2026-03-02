@@ -1,37 +1,10 @@
 services:
-  db:
-    image: pgvector/pgvector:pg16
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: pdf_search
-    ports:
-      - "5433:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 2s
-      timeout: 5s
-      retries: 5
-
   app:
     build: .
     env_file:
       - .env
     ports:
-      - "9287:8000"
-    environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/pdf_search
-      DATABASE_URL_SYNC: postgresql+psycopg2://postgres:postgres@db:5432/pdf_search
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      COHERE_API_KEY: ${COHERE_API_KEY:-}
-    depends_on:
-      db:
-        condition: service_healthy
+      - "9287:9287"
     volumes:
       - ./uploads:/app/uploads
       - ./cache:/app/cache
-
-volumes:
-  pgdata:

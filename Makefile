@@ -25,11 +25,12 @@ typecheck:
 check: deps build format typecheck
 	@echo "All is good"
 
-db-up:
-	docker compose up -d
+# Docker Compose (app only; DB is external)
+dc-up-build:
+	docker compose up -d --build
 
-db-down:
-	docker compose down
+dc-logs:
+	docker compose logs -f
 
 db-reset:
 	uv run python -c "import asyncio; from app.database import reset_db; asyncio.run(reset_db())"

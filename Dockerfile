@@ -27,8 +27,8 @@ COPY app ./app
 COPY templates ./templates
 COPY static ./static
 
-# Expose uvicorn default
-EXPOSE 8000
+# Expose app port
+EXPOSE 9287
 
 # Run uvicorn (bind 0.0.0.0 for external access)
-CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9287"]
