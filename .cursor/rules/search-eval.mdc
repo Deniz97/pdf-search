@@ -14,6 +14,19 @@ Tables: `search_test_questions`, `search_eval_runs`, `search_eval_results`.
 
 Commands: `make generate-questions N_QUESTIONS=10`, `make search-eval`.
 
+## Eval Run Features
+
+- **Incremental persistence** — Each result is written to DB immediately after processing (resilient to crashes).
+- **Resume** — `--resume-run-id <uuid>` skips already-processed questions. Run ID printed at start.
+- **Regeneration** — `DELETE FROM search_eval_results WHERE run_id = :id`, then rerun with `--resume-run-id`.
+
+## search_eval_results Schema
+
+Stores all data for on-demand metric computation (no JOINs needed):
+- `run_id`, `question_id`, `chunk_rank`, `doc_rank`
+- `query_type`, `target_chunk_id`, `target_document_id` (denormalized)
+- `chunk_rank_order`, `document_rank_order` (JSONB)
+
 ## Query Types
 
 LLM assigns one type per question: `direct`, `paraphrase`, `keyword`, `conceptual`, `fact-seeking`, `summary-style`. Used for stratified metrics (by_query_type).
@@ -28,9 +41,9 @@ LLM assigns one type per question: `direct`, `paraphrase`, `keyword`, `conceptua
 
 ### Eval run
 - Uses `async_session()` + `enhanced_search` (async) — same as API
-- Sync Session for loading questions and inserting results
-- Record `chunk_rank` and `doc_rank` (1-based; None if miss)
-- Metrics: hit@k = count where rank <= k; recall@k = hit@k / n
+- Sync Session for loading questions; `_persist_result()` inserts each result and commits immediately (with retries)
+- On resume: load existing `question_id`s for run, filter rows to remaining only
+- Metrics computed from DB via `_load_results_from_db_simple()` — not in-memory aggregation
 
 ### Rank lookup
 ```python
@@ -40,9 +53,15 @@ for i, cid in enumerate(chunk_order):
         break
 ```
 
+### Output (eval_results/[timestamp]/)
+- `configs.md` — Run ID, top_k, n_questions, total_documents, total_chunks, sampling params
+- `results.md` — hit@k, recall@k, precision@k; per-document; by query type
+- `example_result_1..3.md` — Sample Q&A with rank orders
+
 ## Anti-patterns
 
 - **Don't use plain vector search** — use `enhanced_search` to match live UI (query expansion + enrichment boosts + rerank)
 - **Don't change SEARCH_TOP_K** — must match live UI (10) for comparable metrics
 - **Don't run eval before generating questions** — `search_test_questions` must be populated first
 - **Don't use async engine in generate_test_questions** — sync Session with `database_url_sync`
+- **Don't batch-insert all results at once** — persist each result immediately for crash resilience

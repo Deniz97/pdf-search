@@ -4,20 +4,25 @@ We have 38 pdfs in example-pdfs repo, all about current geopolitics.
 
 Our system consist of these steps:
 
-1) make ingest -> OCRs the pdfs, chunk them, and embed those chunks.
-2) make enrich -> Enrich the pdf data with llm generated memory
-3) make test-questions -> Generate random question each related to a single pdf and chunk.
-4) make search-eval -> Asks the generated questions and measure the system's accuracy.
+1) `$ make ingest` -> OCRs the pdfs, chunk them, and embed those chunks.
+2) `$ make enrich` -> Enrich the pdf data with llm generated memory
+3) `$ make test-questions` -> Generate random question each related to a single pdf and chunk.
+4) `$ make search-eval` -> Asks the generated questions and measure the system's accuracy.
+   - Results are saved to DB after each question (resilient to crashes).
+   - If interrupted, resume with: `make search-eval RESUME_RUN_ID=<run-id>` (run ID is printed at start).
+   - To regenerate: delete rows from `search_eval_results` for that run_id, then rerun.
 
-Bonus: "make chat" for chat cli do converse with the documents.
+Bonus: `$ make chat` for chat cli to converse with the documents.
 
 # STACK
 
 We use uv with python 3.11. To run, simply install "uv" (https://github.com/astral-sh/uv) in your system, then run these commands:
 
-$ make deps
-$ make build
-$ make dev -> server is running
+`$ make deps`
+
+`$ make build`
+
+`$ make dev` -> server is running
 
 
 And you are set.
@@ -41,7 +46,7 @@ Then we employ a scoring algorithm to bring all those different kind of matching
 
 ## DATA
 
-As an example data, I manually downloaded around 40 contemporary geopolitics related PDFs from the web, all under 20 pages. I also have a WIP selenium progress crawler in scripts/download_pdfs.py which I could not finist.
+As an example data, I manually downloaded around 40 contemporary geopolitics related PDFs from the web, all under 20 pages. I also have a WIP selenium progress crawler in `scripts/download_pdfs.py` which I could not finist.
 
 ## RESULT
 

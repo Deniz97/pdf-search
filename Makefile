@@ -39,6 +39,7 @@ db-reset:
 migrate:
 	$(MAKE) unlock-documents
 	uv run python -c "import asyncio; from app.database import init_db; asyncio.run(init_db())"
+	uv run python scripts/migrate_search_eval_results.py
 
 # Ingest targets: ROOT is an absolute path (default: $(CURDIR)/example-pdfs), N limits count (default: ALL)
 ROOT ?= $(CURDIR)/example-pdfs
@@ -68,8 +69,9 @@ N_QUESTIONS ?= 10
 generate-questions:
 	uv run python -m app.cli.generate_test_questions --questions-per-document $(N_QUESTIONS) --workers 4
 
+# Optional: RESUME_RUN_ID=<uuid> to resume interrupted run
 search-eval:
-	uv run python -m app.cli.run_search_eval --documents 25 --questions-per-document 4 --workers 4
+	uv run python -m app.cli.run_search_eval --documents 25 --questions-per-document 4 --workers 4 $(if $(RESUME_RUN_ID),--resume-run-id $(RESUME_RUN_ID),)
 
 download-pdfs:
 	uv run python scripts/download_pdfs.py --limit

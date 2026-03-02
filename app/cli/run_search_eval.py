@@ -4,6 +4,10 @@ Loads questions from search_test_questions, runs each through enhanced_search
 (using same top_k=10 as live UI search), records chunk/document ranks, and
 reports accuracy for top1, top2, top4, top8.
 
+- Results are persisted immediately after each question (resilient to crashes).
+- Use --resume-run-id to skip already-processed questions.
+- To regenerate: DELETE FROM search_eval_results WHERE run_id = :id
+
 Writes sanity-check output to eval_results/[timestamp]/:
   - configs.md: eval configuration
   - example_result_1.md, example_result_2.md, example_result_3.md: sample Q&A
@@ -46,11 +50,65 @@ K_VALUES = (1, 2, 4, 8)
 # Concurrent questions per batch
 BATCH_SIZE = 4
 
+# Retries for transient DB errors when persisting
+PERSIST_RETRIES = 3
+PERSIST_RETRY_DELAY = 2.0
+
 
 def _chunks(items: list, size: int):
     """Yield successive chunks of size from items."""
     for i in range(0, len(items), size):
         yield items[i : i + size]
+
+
+def _persist_result(
+    engine,
+    run_id: str,
+    result: dict,
+) -> None:
+    """Persist a single result to DB. Commits immediately. Retries on transient errors."""
+    import json
+
+    for attempt in range(PERSIST_RETRIES):
+        try:
+            with Session(engine) as sync_session:
+                sync_session.execute(
+                    text("""
+                        INSERT INTO search_eval_results
+                        (id, run_id, question_id, chunk_rank, doc_rank,
+                         query_type, target_chunk_id, target_document_id,
+                         chunk_rank_order, document_rank_order)
+                        VALUES (:id, :run_id, :question_id, :chunk_rank, :doc_rank,
+                                :query_type, :target_chunk_id, :target_document_id,
+                                CAST(:chunk_rank_order AS jsonb), CAST(:document_rank_order AS jsonb))
+                    """),
+                    {
+                        "id": str(uuid.uuid4()),
+                        "run_id": run_id,
+                        "question_id": str(result["question_id"]),
+                        "chunk_rank": result["chunk_rank"],
+                        "doc_rank": result["doc_rank"],
+                        "query_type": result["query_type"],
+                        "target_chunk_id": str(result["target_chunk_id"]),
+                        "target_document_id": str(result["target_doc_id"]),
+                        "chunk_rank_order": json.dumps(result["chunk_rank_order"]),
+                        "document_rank_order": json.dumps(result["document_rank_order"]),
+                    },
+                )
+                sync_session.commit()
+            return
+        except Exception as e:
+            if attempt < PERSIST_RETRIES - 1:
+                log.warning(
+                    "Persist failed (attempt %d/%d): %s. Retrying in %.1fs...",
+                    attempt + 1,
+                    PERSIST_RETRIES,
+                    e,
+                    PERSIST_RETRY_DELAY,
+                )
+                time.sleep(PERSIST_RETRY_DELAY)
+            else:
+                raise
 
 
 async def _process_one_question(row: tuple, idx: int, total: int) -> dict:
@@ -132,6 +190,50 @@ def _sample_rows(
     return rows
 
 
+def _load_results_from_db_simple(engine, run_id: str) -> list[dict]:
+    """Load results when question may not be in JOIN (e.g. new columns, simple schema)."""
+    with Session(engine) as sync_session:
+        rows = sync_session.execute(
+            text("""
+                SELECT r.question_id, r.query_type,
+                       r.target_chunk_id, r.target_document_id,
+                       r.chunk_rank, r.doc_rank,
+                       r.chunk_rank_order, r.document_rank_order
+                FROM search_eval_results r
+                WHERE r.run_id = :run_id
+            """),
+            {"run_id": run_id},
+        ).fetchall()
+
+        # Get question text from search_test_questions for example output
+        question_ids = [str(r[0]) for r in rows]
+        q_texts: dict[str, str] = {}
+        if question_ids:
+            q_rows = sync_session.execute(
+                text("SELECT id::text, question FROM search_test_questions WHERE id::text = ANY(:ids)"),
+                {"ids": question_ids},
+            ).fetchall()
+            for qid, qtext in q_rows:
+                q_texts[qid] = qtext
+
+    results = []
+    for row in rows:
+        q_id, query_type, target_chunk_id, target_doc_id, chunk_rank, doc_rank, cro, dro = row
+        q_id_str = str(q_id)
+        results.append({
+            "question_id": q_id,
+            "question": q_texts.get(q_id_str, "(stored result)"),
+            "query_type": query_type or "unknown",
+            "target_chunk_id": str(target_chunk_id),
+            "target_doc_id": str(target_doc_id),
+            "chunk_rank": chunk_rank,
+            "doc_rank": doc_rank,
+            "chunk_rank_order": cro or [],
+            "document_rank_order": dro or [],
+        })
+    return results
+
+
 async def run_eval(
     notes: str | None = None,
     limit: int | None = None,
@@ -139,8 +241,11 @@ async def run_eval(
     questions_per_document: int | None = None,
     workers: int = BATCH_SIZE,
     shutdown_requested: list | None = None,
+    resume_run_id: str | None = None,
 ) -> dict:
-    """Run evaluation and return summary metrics."""
+    """Run evaluation and return summary metrics.
+    Results are persisted after each question. Use resume_run_id to skip already-processed questions.
+    """
     engine = create_engine(settings.database_url_sync)
     try:
         with Session(engine) as sync_session:
@@ -165,30 +270,54 @@ async def run_eval(
             else:
                 log.info("Loaded %d questions", len(rows))
 
-            run_id = uuid.uuid4()
-            sync_session.execute(
-                text("""
-                    INSERT INTO search_eval_runs (id, top_k, notes)
-                    VALUES (:id, :top_k, :notes)
-                """),
-                {"id": str(run_id), "top_k": SEARCH_TOP_K, "notes": notes},
-            )
-            sync_session.commit()
+            # Create or resume run
+            if resume_run_id:
+                run_id = uuid.UUID(resume_run_id)
+                existing = sync_session.execute(
+                    text("SELECT id FROM search_eval_runs WHERE id = :id"),
+                    {"id": str(run_id)},
+                ).fetchone()
+                if not existing:
+                    return {"error": f"Run ID {resume_run_id} not found. Cannot resume."}
+                done_ids = {
+                    str(r[0])
+                    for r in sync_session.execute(
+                        text("SELECT question_id::text FROM search_eval_results WHERE run_id = :run_id"),
+                        {"run_id": str(run_id)},
+                    ).fetchall()
+                }
+                rows = [r for r in rows if str(r[0]) not in done_ids]
+                log.info("Resuming run %s: %d already done, %d remaining", run_id, len(done_ids), len(rows))
+                if not rows:
+                    log.info("All questions already processed. Computing metrics from DB...")
+                    full_results = _load_results_from_db_simple(engine, str(run_id))
+                    return _compute_and_write_output(
+                        engine, run_id, full_results, workers, notes,
+                        limit, documents, questions_per_document,
+                    )
+            else:
+                run_id = uuid.uuid4()
+                sync_session.execute(
+                    text("""
+                        INSERT INTO search_eval_runs (id, top_k, notes)
+                        VALUES (:id, :top_k, :notes)
+                    """),
+                    {"id": str(run_id), "top_k": SEARCH_TOP_K, "notes": notes},
+                )
+                sync_session.commit()
 
         log.info("Run ID: %s | top_k: %d | workers: %d", run_id, SEARCH_TOP_K, workers)
-        log.info("Running searches (LLM query expansion + rerank per question)...")
+        log.info("Running searches (persisting each result immediately)...")
         shutdown = shutdown_requested or [False]
-        full_results: list[dict] = []
-        chunk_hits = {k: 0 for k in K_VALUES}
-        doc_hits = {k: 0 for k in K_VALUES}
-        by_type: dict[str, dict] = {}
         total = len(rows)
+        start_idx_offset = total  # for display; we don't track "already done" in progress
         start_time = time.perf_counter()
+        processed = 0
 
         for batch in _chunks(rows, workers):
             if shutdown[0]:
                 break
-            start_idx = len(full_results) + 1
+            start_idx = processed + 1
             batch_tasks = [
                 _process_one_question(row, start_idx + i, total)
                 for i, row in enumerate(batch)
@@ -196,265 +325,255 @@ async def run_eval(
             batch_results = await asyncio.gather(*batch_tasks)
 
             for r in batch_results:
-                full_results.append(r)
-
-                chunk_rank = r["chunk_rank"]
-                doc_rank = r["doc_rank"]
-                query_type = r["query_type"]
-
-                for k in K_VALUES:
-                    if chunk_rank is not None and chunk_rank <= k:
-                        chunk_hits[k] += 1
-                    if doc_rank is not None and doc_rank <= k:
-                        doc_hits[k] += 1
-
-                if query_type not in by_type:
-                    by_type[query_type] = {
-                        "n": 0,
-                        **{f"chunk@{k}": 0 for k in K_VALUES},
-                        **{f"doc@{k}": 0 for k in K_VALUES},
-                    }
-                bt = by_type[query_type]
-                bt["n"] += 1
-                for k in K_VALUES:
-                    if chunk_rank is not None and chunk_rank <= k:
-                        bt[f"chunk@{k}"] += 1
-                    if doc_rank is not None and doc_rank <= k:
-                        bt[f"doc@{k}"] += 1
+                _persist_result(engine, str(run_id), r)
+                processed += 1
 
         total_elapsed = time.perf_counter() - start_time
         if shutdown[0]:
-            log.info("Interrupted. Saving %d results collected so far...", len(full_results))
+            log.info("Interrupted. %d results persisted.", processed)
         log.info(
             "Searches complete in %.1fs (%.1f q/s)",
             total_elapsed,
-            total / total_elapsed if total_elapsed > 0 else 0,
+            processed / total_elapsed if total_elapsed > 0 else 0,
         )
-        log.info("Writing %d results to search_eval_results...", len(full_results))
-
-        # Batch insert results
-        with Session(engine) as sync_session:
-            for r in full_results:
-                sync_session.execute(
-                    text("""
-                        INSERT INTO search_eval_results
-                        (id, run_id, question_id, chunk_rank, doc_rank)
-                        VALUES (:id, :run_id, :question_id, :chunk_rank, :doc_rank)
-                    """),
-                    {
-                        "id": str(uuid.uuid4()),
-                        "run_id": str(run_id),
-                        "question_id": str(r["question_id"]),
-                        "chunk_rank": r["chunk_rank"],
-                        "doc_rank": r["doc_rank"],
-                    },
-                )
-            sync_session.commit()
-
-        log.info("Done. Computing metrics...")
-        n = len(full_results)
-        chunk_metrics = {}
-        doc_metrics = {}
-        for k in K_VALUES:
-            chunk_metrics[f"hit@{k}"] = chunk_hits[k]
-            chunk_metrics[f"recall@{k}"] = chunk_hits[k] / n if n else 0
-            # Precision@k: 1/k when relevant item in top-k, else 0
-            chunk_metrics[f"precision@{k}"] = (
-                chunk_hits[k] / (k * n) if n and k else 0.0
-            )
-            doc_metrics[f"hit@{k}"] = doc_hits[k]
-            doc_metrics[f"recall@{k}"] = doc_hits[k] / n if n else 0
-            doc_metrics[f"precision@{k}"] = (
-                doc_hits[k] / (k * n) if n and k else 0.0
-            )
-
-        # Per-document metrics
-        by_doc: dict[str, dict] = defaultdict(
-            lambda: {
-                "n": 0,
-                **{f"chunk_hit@{k}": 0 for k in K_VALUES},
-                **{f"doc_hit@{k}": 0 for k in K_VALUES},
-            }
+        log.info("Loading results from DB for metrics...")
+        full_results = _load_results_from_db_simple(engine, str(run_id))
+        return _compute_and_write_output(
+            engine, run_id, full_results, workers, notes,
+            limit, documents, questions_per_document,
         )
-        for r in full_results:
-            doc_id = r["target_doc_id"]
-            by_doc[doc_id]["n"] += 1
-            for k in K_VALUES:
-                if r["chunk_rank"] is not None and r["chunk_rank"] <= k:
-                    by_doc[doc_id][f"chunk_hit@{k}"] += 1
-                if r["doc_rank"] is not None and r["doc_rank"] <= k:
-                    by_doc[doc_id][f"doc_hit@{k}"] += 1
-
-        # Write eval_results/[timestamp]/*.md
-        ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        out_dir = Path("eval_results") / ts
-        out_dir.mkdir(parents=True, exist_ok=True)
-        log.info("Writing sanity-check output to %s/", out_dir)
-
-        # configs.md
-        config_lines = [
-            "# Eval Configuration",
-            "",
-            f"- **Run ID**: `{run_id}`",
-            f"- **Timestamp**: {ts}",
-            f"- **top_k**: {SEARCH_TOP_K}",
-            f"- **workers**: {workers}",
-            f"- **n_questions**: {n}",
-        ]
-        if limit is not None:
-            config_lines.append(f"- **limit**: {limit}")
-        if documents is not None:
-            config_lines.append(f"- **documents**: {documents}")
-        if questions_per_document is not None:
-            config_lines.append(f"- **questions_per_document**: {questions_per_document}")
-        if notes:
-            config_lines.append(f"- **notes**: {notes}")
-        (out_dir / "configs.md").write_text("\n".join(config_lines), encoding="utf-8")
-
-        # example_result_1.md, example_result_2.md, example_result_3.md
-        for i, r in enumerate(full_results[:3], 1):
-            lines = [
-                "# Example Result {}",
-                "",
-                "## Question",
-                "",
-                r["question"],
-                "",
-                "## Correct Answer",
-                "",
-                f"- **Document ID**: `{r['target_doc_id']}`",
-                f"- **Chunk ID**: `{r['target_chunk_id']}`",
-                "",
-                "## Search Results",
-                "",
-                "### Document IDs (in order)",
-                "",
-            ]
-            for j, did in enumerate(r["document_rank_order"], 1):
-                mark = " ✓" if did == r["target_doc_id"] else ""
-                lines.append(f"{j}. `{did}`{mark}")
-            lines.extend(
-                [
-                    "",
-                    "### Chunk IDs (in order)",
-                    "",
-                ]
-            )
-            for j, cid in enumerate(r["chunk_rank_order"], 1):
-                mark = " ✓" if cid == r["target_chunk_id"] else ""
-                lines.append(f"{j}. `{cid}`{mark}")
-            (out_dir / f"example_result_{i}.md").write_text(
-                "\n".join(lines).format(i), encoding="utf-8"
-            )
-
-        # Fetch doc filenames for per-document table
-        doc_ids = list(by_doc.keys())
-        doc_id_to_filename: dict[str, str] = {}
-        if doc_ids:
-            with Session(engine) as sync_session:
-                result = sync_session.execute(
-                    text(
-                        "SELECT id::text, filename FROM documents WHERE id::text = ANY(:ids)"
-                    ),
-                    {"ids": doc_ids},
-                )
-                for row in result.fetchall():
-                    doc_id_to_filename[row[0]] = row[1]
-
-        # results.md
-        res_lines = [
-            "# Search Eval Results",
-            "",
-            f"Run ID: `{run_id}` | Questions: {n} | top_k: {SEARCH_TOP_K}",
-            "",
-            "## Overall Metrics",
-            "",
-            "### Chunk-level",
-            "",
-            "| k | hit@k | recall@k | precision@k |",
-            "|---|-------|----------|--------------|",
-        ]
-        for k in K_VALUES:
-            c = chunk_metrics
-            res_lines.append(
-                f"| {k} | {c[f'hit@{k}']} | {c[f'recall@{k}']:.1%} | {c[f'precision@{k}']:.1%} |"
-            )
-        res_lines.extend(
-            [
-                "",
-                "### Document-level",
-                "",
-                "| k | hit@k | recall@k | precision@k |",
-                "|---|-------|----------|--------------|",
-            ]
-        )
-        for k in K_VALUES:
-            d = doc_metrics
-            res_lines.append(
-                f"| {k} | {d[f'hit@{k}']} | {d[f'recall@{k}']:.1%} | {d[f'precision@{k}']:.1%} |"
-            )
-
-        res_lines.extend(
-            [
-                "",
-                "## Per-Document Metrics",
-                "",
-                "| Document | filename | n | chunk hit@1 | chunk hit@2 | chunk hit@4 | chunk hit@8 | doc hit@1 | doc hit@2 | doc hit@4 | doc hit@8 |",
-                "|----------|----------|---|-------------|-------------|-------------|-------------|-----------|-----------|-----------|-----------|",
-            ]
-        )
-        for doc_id in sorted(by_doc.keys()):
-            bd = by_doc[doc_id]
-            fn = doc_id_to_filename.get(doc_id, "—").replace("|", " ")
-            row = [
-                doc_id[:8] + "…",
-                (fn[:20] + "…") if len(fn) > 20 else fn,
-                str(bd["n"]),
-            ]
-            for k in K_VALUES:
-                row.append(str(bd[f"chunk_hit@{k}"]))
-            for k in K_VALUES:
-                row.append(str(bd[f"doc_hit@{k}"]))
-            res_lines.append("| " + " | ".join(row) + " |")
-
-        res_lines.extend(
-            [
-                "",
-                "## By Query Type",
-                "",
-            ]
-        )
-        for qtype, bt in sorted(by_type.items()):
-            n_q = bt["n"]
-            res_lines.append(f"### {qtype} (n={n_q})")
-            res_lines.append("")
-            res_lines.append(
-                "| k | chunk recall@k | doc recall@k |"
-            )
-            res_lines.append("|---|---------------|--------------|")
-            for k in K_VALUES:
-                c_r = bt[f"chunk@{k}"] / n_q if n_q else 0
-                d_r = bt[f"doc@{k}"] / n_q if n_q else 0
-                res_lines.append(f"| {k} | {c_r:.1%} | {d_r:.1%} |")
-            res_lines.append("")
-
-        (out_dir / "results.md").write_text("\n".join(res_lines), encoding="utf-8")
-
-        return {
-            "run_id": str(run_id),
-            "n_questions": n,
-            "chunk": chunk_metrics,
-            "document": doc_metrics,
-            "by_query_type": by_type,
-            "output_dir": str(out_dir),
-        }
     finally:
         engine.dispose()
+
+
+def _compute_and_write_output(
+    engine,
+    run_id,
+    full_results: list[dict],
+    workers: int,
+    notes: str | None,
+    limit: int | None,
+    documents: int | None,
+    questions_per_document: int | None,
+) -> dict:
+    """Compute metrics from full_results and write eval output files."""
+    n = len(full_results)
+    if n == 0:
+        return {"error": "No results to compute metrics."}
+
+    chunk_hits = {k: 0 for k in K_VALUES}
+    doc_hits = {k: 0 for k in K_VALUES}
+    by_type: dict[str, dict] = {}
+
+    for r in full_results:
+        chunk_rank = r["chunk_rank"]
+        doc_rank = r["doc_rank"]
+        query_type = r["query_type"]
+        for k in K_VALUES:
+            if chunk_rank is not None and chunk_rank <= k:
+                chunk_hits[k] += 1
+            if doc_rank is not None and doc_rank <= k:
+                doc_hits[k] += 1
+        if query_type not in by_type:
+            by_type[query_type] = {
+                "n": 0,
+                **{f"chunk@{k}": 0 for k in K_VALUES},
+                **{f"doc@{k}": 0 for k in K_VALUES},
+            }
+        bt = by_type[query_type]
+        bt["n"] += 1
+        for k in K_VALUES:
+            if chunk_rank is not None and chunk_rank <= k:
+                bt[f"chunk@{k}"] += 1
+            if doc_rank is not None and doc_rank <= k:
+                bt[f"doc@{k}"] += 1
+
+    chunk_metrics = {}
+    doc_metrics = {}
+    for k in K_VALUES:
+        chunk_metrics[f"hit@{k}"] = chunk_hits[k]
+        chunk_metrics[f"recall@{k}"] = chunk_hits[k] / n if n else 0
+        chunk_metrics[f"precision@{k}"] = (
+            chunk_hits[k] / (k * n) if n and k else 0.0
+        )
+        doc_metrics[f"hit@{k}"] = doc_hits[k]
+        doc_metrics[f"recall@{k}"] = doc_hits[k] / n if n else 0
+        doc_metrics[f"precision@{k}"] = (
+            doc_hits[k] / (k * n) if n and k else 0.0
+        )
+
+    by_doc: dict[str, dict] = defaultdict(
+        lambda: {
+            "n": 0,
+            **{f"chunk_hit@{k}": 0 for k in K_VALUES},
+            **{f"doc_hit@{k}": 0 for k in K_VALUES},
+        }
+    )
+    for r in full_results:
+        doc_id = r["target_doc_id"]
+        by_doc[doc_id]["n"] += 1
+        for k in K_VALUES:
+            if r["chunk_rank"] is not None and r["chunk_rank"] <= k:
+                by_doc[doc_id][f"chunk_hit@{k}"] += 1
+            if r["doc_rank"] is not None and r["doc_rank"] <= k:
+                by_doc[doc_id][f"doc_hit@{k}"] += 1
+
+    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    out_dir = Path("eval_results") / ts
+    out_dir.mkdir(parents=True, exist_ok=True)
+    log.info("Writing sanity-check output to %s/", out_dir)
+
+    with Session(engine) as sync_session:
+        n_docs, n_chunks = sync_session.execute(
+            text("SELECT (SELECT COUNT(*) FROM documents), (SELECT COUNT(*) FROM chunks)")
+        ).fetchone()
+
+    config_lines = [
+        "# Eval Configuration",
+        "",
+        f"- **Run ID**: `{run_id}`",
+        f"- **Timestamp**: {ts}",
+        f"- **top_k**: {SEARCH_TOP_K}",
+        f"- **workers**: {workers}",
+        f"- **n_questions**: {n}",
+        f"- **total_documents**: {n_docs}",
+        f"- **total_chunks**: {n_chunks}",
+    ]
+    if limit is not None:
+        config_lines.append(f"- **limit**: {limit}")
+    if documents is not None:
+        config_lines.append(f"- **documents**: {documents}")
+    if questions_per_document is not None:
+        config_lines.append(f"- **questions_per_document**: {questions_per_document}")
+    if notes:
+        config_lines.append(f"- **notes**: {notes}")
+    (out_dir / "configs.md").write_text("\n".join(config_lines), encoding="utf-8")
+
+    for i, r in enumerate(full_results[:3], 1):
+        lines = [
+            "# Example Result {}",
+            "",
+            "## Question",
+            "",
+            r["question"],
+            "",
+            "## Correct Answer",
+            "",
+            f"- **Document ID**: `{r['target_doc_id']}`",
+            f"- **Chunk ID**: `{r['target_chunk_id']}`",
+            "",
+            "## Search Results",
+            "",
+            "### Document IDs (in order)",
+            "",
+        ]
+        for j, did in enumerate(r["document_rank_order"], 1):
+            mark = " ✓" if did == r["target_doc_id"] else ""
+            lines.append(f"{j}. `{did}`{mark}")
+        lines.extend(["", "### Chunk IDs (in order)", ""])
+        for j, cid in enumerate(r["chunk_rank_order"], 1):
+            mark = " ✓" if cid == r["target_chunk_id"] else ""
+            lines.append(f"{j}. `{cid}`{mark}")
+        (out_dir / f"example_result_{i}.md").write_text(
+            "\n".join(lines).format(i), encoding="utf-8"
+        )
+
+    doc_ids = list(by_doc.keys())
+    doc_id_to_filename: dict[str, str] = {}
+    if doc_ids:
+        with Session(engine) as sync_session:
+            result = sync_session.execute(
+                text(
+                    "SELECT id::text, filename FROM documents WHERE id::text = ANY(:ids)"
+                ),
+                {"ids": doc_ids},
+            )
+            for row in result.fetchall():
+                doc_id_to_filename[row[0]] = row[1]
+
+    res_lines = [
+        "# Search Eval Results",
+        "",
+        f"Run ID: `{run_id}` | Questions: {n} | top_k: {SEARCH_TOP_K}",
+        "",
+        "## Overall Metrics",
+        "",
+        "### Chunk-level",
+        "",
+        "| k | hit@k | recall@k | precision@k |",
+        "|---|-------|----------|--------------|",
+    ]
+    for k in K_VALUES:
+        c = chunk_metrics
+        res_lines.append(
+            f"| {k} | {c[f'hit@{k}']} | {c[f'recall@{k}']:.1%} | {c[f'precision@{k}']:.1%} |"
+        )
+    res_lines.extend([
+        "",
+        "### Document-level",
+        "",
+        "| k | hit@k | recall@k | precision@k |",
+        "|---|-------|----------|--------------|",
+    ])
+    for k in K_VALUES:
+        d = doc_metrics
+        res_lines.append(
+            f"| {k} | {d[f'hit@{k}']} | {d[f'recall@{k}']:.1%} | {d[f'precision@{k}']:.1%} |"
+        )
+    res_lines.extend([
+        "",
+        "## Per-Document Metrics",
+        "",
+        "| Document | filename | n | chunk hit@1 | chunk hit@2 | chunk hit@4 | chunk hit@8 | doc hit@1 | doc hit@2 | doc hit@4 | doc hit@8 |",
+        "|----------|----------|---|-------------|-------------|-------------|-------------|-----------|-----------|-----------|-----------|",
+    ])
+    for doc_id in sorted(by_doc.keys()):
+        bd = by_doc[doc_id]
+        fn = doc_id_to_filename.get(doc_id, "—").replace("|", " ")
+        row = [
+            doc_id[:8] + "…",
+            (fn[:20] + "…") if len(fn) > 20 else fn,
+            str(bd["n"]),
+        ]
+        for k in K_VALUES:
+            row.append(str(bd[f"chunk_hit@{k}"]))
+        for k in K_VALUES:
+            row.append(str(bd[f"doc_hit@{k}"]))
+        res_lines.append("| " + " | ".join(row) + " |")
+    res_lines.extend(["", "## By Query Type", ""])
+    for qtype, bt in sorted(by_type.items()):
+        n_q = bt["n"]
+        res_lines.append(f"### {qtype} (n={n_q})")
+        res_lines.append("")
+        res_lines.append("| k | chunk recall@k | doc recall@k |")
+        res_lines.append("|---|---------------|--------------|")
+        for k in K_VALUES:
+            c_r = bt[f"chunk@{k}"] / n_q if n_q else 0
+            d_r = bt[f"doc@{k}"] / n_q if n_q else 0
+            res_lines.append(f"| {k} | {c_r:.1%} | {d_r:.1%} |")
+        res_lines.append("")
+
+    (out_dir / "results.md").write_text("\n".join(res_lines), encoding="utf-8")
+
+    return {
+        "run_id": str(run_id),
+        "n_questions": n,
+        "chunk": chunk_metrics,
+        "document": doc_metrics,
+        "by_query_type": by_type,
+        "output_dir": str(out_dir),
+    }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run search evaluation over test questions (uses top_k=10, same as live UI)"
+    )
+    parser.add_argument(
+        "--resume-run-id",
+        type=str,
+        default=None,
+        help="Resume an existing run; skips already-processed questions",
     )
     parser.add_argument(
         "--notes",
@@ -498,6 +617,8 @@ def main() -> int:
         args.workers,
         list(K_VALUES),
     )
+    if args.resume_run_id:
+        log.info("Resume run ID: %s", args.resume_run_id)
     if args.documents is not None:
         log.info("Documents: %d", args.documents)
     if args.questions_per_document is not None:
@@ -515,6 +636,7 @@ def main() -> int:
             questions_per_document=args.questions_per_document,
             workers=args.workers,
             shutdown_requested=shutdown_requested,
+            resume_run_id=args.resume_run_id,
         )
     )
 

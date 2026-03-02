@@ -145,7 +145,11 @@ class DownloadedPdf(Base):
 
 
 class SearchEvalResult(Base):
-    """Per-question result from a search eval run."""
+    """Per-question result from a search eval run.
+
+    Stores all data needed to compute metrics on demand (no JOINs required).
+    For regeneration: DELETE FROM search_eval_results WHERE run_id = :id
+    """
 
     __tablename__ = "search_eval_results"
 
@@ -162,3 +166,9 @@ class SearchEvalResult(Base):
     )
     chunk_rank = Column(Integer, nullable=True)  # 1-indexed, None if not in top_k
     doc_rank = Column(Integer, nullable=True)  # 1-indexed, None if not in top_k
+    # Denormalized for on-demand metric computation
+    query_type = Column(String, nullable=False)
+    target_chunk_id = Column(UUID(as_uuid=True), nullable=False)
+    target_document_id = Column(UUID(as_uuid=True), nullable=False)
+    chunk_rank_order = Column(JSON, nullable=True)  # [chunk_id, ...] as strings
+    document_rank_order = Column(JSON, nullable=True)  # [doc_id, ...] as strings
