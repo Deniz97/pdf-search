@@ -5,7 +5,7 @@ We have 38 pdfs in example-pdfs repo, all about current geopolitics.
 Our system consist of these steps:
 
 1) `$ make ingest` -> OCRs the pdfs, chunk them, and embed those chunks.
-2) `$ make enrich` -> Enrich the pdf data with llm generated memory
+2) `$ make enrich` -> Enrich the pdf data with llm generated metadata (which we call memories)
 3) `$ make test-questions` -> Generate random question each related to a single pdf and chunk.
 4) `$ make search-eval` -> Asks the generated questions and measure the system's accuracy.
    - Results are saved to DB after each question (resilient to crashes).
@@ -21,6 +21,10 @@ We use uv with python 3.11. To run, simply install "uv" (https://github.com/astr
 `$ make deps`
 
 `$ make build`
+
+`$ make check`
+
+`$ make migrate`
 
 `$ make dev` -> server is running
 
@@ -59,6 +63,7 @@ After you run make dev, hit `http://localhost:8000` to view the ui. You can sear
 
 ## TODO
 
+- First of all, we should measure time spent on each operation on our query pipeline and optimize the total time spent. Very relatedly, we can first measure the complexity of the user question, and run a pipeline accordingly, maybe having 2 for starts, a "simple" and a "deep" pipeline.
 - We can add paddleOCR to better parse the layout, helping in both chunking and detecting tables/figures etc.
 -- I tried it, but took forever on a CPU, so we can try optimize that or go for a GPU based solution.
 - We can also use multi-modal-LLM based processing for layout, more expensive yes, but when you think about it we pass whole data trough the LLM once for metadata enrichment anyway.

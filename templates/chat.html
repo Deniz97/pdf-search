@@ -3,6 +3,8 @@
 {% block title %}Chat - PDF Search{% endblock %}
 
 {% block content %}
+<script src="https://unpkg.com/marked@11.1.1/marked.min.js"></script>
+<script src="https://unpkg.com/dompurify@3.0.9/dist/purify.min.js"></script>
 <div class="container">
     <h1>Chat with Documents</h1>
 
@@ -45,7 +47,12 @@
         
         const contentDiv = document.createElement('div');
         contentDiv.className = 'message-content';
-        contentDiv.textContent = content;
+        if (role === 'assistant') {
+            const html = marked.parse(content || '', { gfm: true, breaks: true });
+            contentDiv.innerHTML = DOMPurify.sanitize(html);
+        } else {
+            contentDiv.textContent = content;
+        }
         
         messageDiv.appendChild(roleDiv);
         messageDiv.appendChild(contentDiv);

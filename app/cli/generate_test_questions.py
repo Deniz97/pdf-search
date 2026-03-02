@@ -3,8 +3,9 @@
 For each document, randomly samples chunks and uses an LLM to generate one search
 query per sampled chunk. Ensures equal number of questions per document.
 
-  make test-questions                              Generate 10 per doc (default)
-  make test-questions N_QUESTIONS=5                 Generate 5 per doc
+  make generate-questions                           Generate 10 per doc, continue from existing (default)
+  make generate-questions N_QUESTIONS=5              Generate 5 per doc
+  make generate-questions MODE=recreate             Delete existing questions and regenerate from scratch
 """
 
 import argparse
@@ -212,9 +213,26 @@ def main() -> int:
         default=DEFAULT_WORKERS,
         help=f"Parallel workers for document-level processing (default: {DEFAULT_WORKERS})",
     )
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--continue",
+        dest="mode",
+        action="store_const",
+        const="continue",
+        help="Continue from existing questions (default)",
+    )
+    mode_group.add_argument(
+        "--recreate",
+        dest="mode",
+        action="store_const",
+        const="recreate",
+        help="Delete existing questions and regenerate from scratch",
+    )
+    parser.set_defaults(mode="continue")
     args = parser.parse_args()
     per_doc = max(1, args.questions_per_document)
     workers = args.workers
+    mode = args.mode
 
     shutdown_requested = setup_signal_handler()
 
@@ -224,6 +242,13 @@ def main() -> int:
             if not docs:
                 print("No documents with chunks found. Run ingest first.", file=sys.stderr)
                 return 1
+
+            if mode == "recreate":
+                deleted = session.execute(
+                    text("DELETE FROM search_test_questions")
+                ).rowcount
+                session.commit()
+                print(f"Recreate mode: deleted {deleted} existing questions.")
 
             # Build existing: doc_id -> (count of questions, set of chunk_ids with questions)
             existing_rows = session.execute(

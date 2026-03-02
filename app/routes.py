@@ -284,7 +284,8 @@ async def build_system_prompt(db: AsyncSession) -> str:
     if not documents:
         return (
             "You are a helpful assistant with access to a document library. "
-            "However, no documents have been uploaded yet."
+            "However, no documents have been uploaded yet. "
+            "Format your answers using Markdown when appropriate."
         )
 
     doc_list = "\n".join(f"  - {d.filename} ({d.page_count} pages)" for d in documents)
@@ -296,7 +297,10 @@ async def build_system_prompt(db: AsyncSession) -> str:
         "Use the `search` tool to find relevant information across all documents, "
         "or `search_in_book` to search within a specific document by its filename. "
         "Always cite which document and page your information comes from. "
-        "If you can't find relevant information, say so honestly."
+        "If you can't find relevant information, say so honestly.\n\n"
+        "Format your answers using Markdown: use **bold** for emphasis, bullet points "
+        "for lists, `inline code` for technical terms, and headings when structuring "
+        "longer answers. The answer will be displayed with markdown rendering."
     )
 
 

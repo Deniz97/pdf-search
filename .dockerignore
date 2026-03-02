@@ -11,3 +11,4 @@ downloaded-pdfs/
 .ruff_cache/
 dist/
 example-pdfs/
+eval_results/

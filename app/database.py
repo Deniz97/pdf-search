@@ -8,11 +8,18 @@ from app.config import settings
 
 log = logging.getLogger(__name__)
 
-# Timeout connection after 10s to avoid hanging when DB is unreachable
+# Timeout connection after 10s to avoid hanging when DB is unreachable.
+# pool_pre_ping: avoid "connection was closed in the middle of operation" when
+#   running parallel scripts or after idle connections are dropped.
+# pool_size/max_overflow: support search-eval --workers 8 + other parallel usage.
 engine = create_async_engine(
     settings.database_url,
     echo=False,
     connect_args={"timeout": 10},
+    pool_pre_ping=True,
+    pool_size=20,
+    max_overflow=10,
+    pool_recycle=300,  # recycle connections every 5 min (avoid stale long-lived conns)
 )
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 

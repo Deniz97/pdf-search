@@ -64,10 +64,12 @@ chat:
 	uv run python -m app.cli.chat
 
 # Search eval: generate test questions (per document), then run eval
+# MODE: continue (default) or recreate
 N_QUESTIONS ?= 10
+MODE ?= continue
 
 generate-questions:
-	uv run python -m app.cli.generate_test_questions --questions-per-document $(N_QUESTIONS) --workers 4
+	uv run python -m app.cli.generate_test_questions --questions-per-document $(N_QUESTIONS) --workers 4 --$(MODE)
 
 # Optional: RESUME_RUN_ID=<uuid> to resume interrupted run
 RESUME_RUN_ID=361a3a04-1dc6-4fe8-8414-6499a970a27f
