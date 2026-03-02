@@ -70,8 +70,9 @@ generate-questions:
 	uv run python -m app.cli.generate_test_questions --questions-per-document $(N_QUESTIONS) --workers 4
 
 # Optional: RESUME_RUN_ID=<uuid> to resume interrupted run
+RESUME_RUN_ID=361a3a04-1dc6-4fe8-8414-6499a970a27f
 search-eval:
-	uv run python -m app.cli.run_search_eval --documents 25 --questions-per-document 4 --workers 4 $(if $(RESUME_RUN_ID),--resume-run-id $(RESUME_RUN_ID),)
+	uv run python -m app.cli.run_search_eval --documents 25 --questions-per-document 4 --workers 8 $(if $(RESUME_RUN_ID),--resume-run-id $(RESUME_RUN_ID),)
 
 download-pdfs:
 	uv run python scripts/download_pdfs.py --limit
