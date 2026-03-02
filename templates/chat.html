@@ -74,7 +74,20 @@
 
         // Show loading
         const messagesDiv = document.getElementById('chat-messages');
-        addMessage('assistant', 'Thinking...');
+        const emptyState = messagesDiv.querySelector('.empty-state');
+        if (emptyState) emptyState.remove();
+        const messageDiv = document.createElement('div');
+        messageDiv.className = 'message message-assistant message-loading';
+        const roleDiv = document.createElement('div');
+        roleDiv.className = 'message-role';
+        roleDiv.textContent = 'Assistant';
+        const contentDiv = document.createElement('div');
+        contentDiv.className = 'message-content';
+        contentDiv.innerHTML = 'Thinking<span class="thinking-dots"><span>.</span><span>.</span><span>.</span></span>';
+        messageDiv.appendChild(roleDiv);
+        messageDiv.appendChild(contentDiv);
+        messagesDiv.appendChild(messageDiv);
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
         const loadingMsg = messagesDiv.lastElementChild;
 
         try {
