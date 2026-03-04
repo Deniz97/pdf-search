@@ -1,3 +1,5 @@
+Deployed at https://pdf-search.kodhouse.com/
+
 Hello, this is a demo project to display pdf RAG+retrieval capabilities.
 
 We have 38 pdfs in example-pdfs repo, all about current geopolitics.
